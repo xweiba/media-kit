@@ -437,6 +437,31 @@ abstract class PlatformPlayer {
   final List<Future<void> Function()> release = [];
 }
 
+/// Describes a native read-only media protocol implemented by the host.
+///
+/// [openCallback] must be the address of a native
+/// `mpv_stream_cb_open_ro_fn`. The callback and [userData] must remain valid
+/// until the underlying mpv core has terminated. Media read callbacks must be
+/// implemented in native code; Dart callbacks are intentionally unsupported
+/// because libmpv performs blocking reads on its own threads.
+class NativeMediaIOProvider {
+  /// URI scheme registered with libmpv, without the `://` suffix.
+  final String protocol;
+
+  /// Opaque native pointer forwarded to every open callback; zero is allowed.
+  final int userData;
+
+  /// Address of the host's native `mpv_stream_cb_open_ro_fn` callback.
+  final int openCallback;
+
+  /// Creates a native media I/O provider descriptor.
+  const NativeMediaIOProvider({
+    required this.protocol,
+    required this.openCallback,
+    this.userData = 0,
+  });
+}
+
 /// {@template player_configuration}
 ///
 /// PlayerConfiguration
@@ -528,6 +553,12 @@ class PlayerConfiguration {
   /// When set to `true`, `hls_ad_filter=1` is passed to disable ads.
   final bool adBlocker;
 
+  /// Host-owned native readers registered before the player opens any media.
+  ///
+  /// This is ignored by web backends. Protocol callbacks remain registered
+  /// until the underlying mpv core terminates and must outlive the [Player].
+  final List<NativeMediaIOProvider> mediaIOProviders;
+
   /// {@macro player_configuration}
   const PlayerConfiguration({
     this.vo = 'null',
@@ -555,6 +586,7 @@ class PlayerConfiguration {
       'crypto',
     ],
     this.adBlocker = false,
+    this.mediaIOProviders = const [],
   });
 }
 

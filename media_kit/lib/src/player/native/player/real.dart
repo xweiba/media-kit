@@ -29,6 +29,7 @@ import 'package:media_kit/src/models/video_params.dart';
 import 'package:media_kit/src/player/native/core/fallback_bitrate_handler.dart';
 import 'package:media_kit/src/player/native/core/initializer.dart';
 import 'package:media_kit/src/player/native/core/native_library.dart';
+import 'package:media_kit/src/player/native/core/native_media_io.dart';
 import 'package:media_kit/src/player/native/utils/android_asset_loader.dart';
 import 'package:media_kit/src/player/native/utils/android_helper.dart';
 import 'package:media_kit/src/player/native/utils/isolates.dart';
@@ -2373,6 +2374,12 @@ class NativePlayer extends PlatformPlayer {
         options: options,
       );
 
+      registerNativeMediaIOProviders(
+        DynamicLibrary.open(NativeLibrary.path),
+        ctx,
+        configuration.mediaIOProviders,
+      );
+
       // ALL:
       //
       // idle = yes
@@ -2439,7 +2446,12 @@ class NativePlayer extends PlatformPlayer {
             'strict=experimental',
             'allowed_extensions=ALL',
             'hls_ad_filter=${configuration.adBlocker ? 1 : 0}',
-            'protocol_whitelist=[${configuration.protocolWhitelist.join(',')}]'
+            'protocol_whitelist=[${{
+              ...configuration.protocolWhitelist,
+              ...configuration.mediaIOProviders.map(
+                (provider) => provider.protocol,
+              ),
+            }.join(',')}]'
           ].join(','),
           'sub-ass': configuration.libass ? 'yes' : 'no',
           'sub-visibility': configuration.libass ? 'yes' : 'no',
