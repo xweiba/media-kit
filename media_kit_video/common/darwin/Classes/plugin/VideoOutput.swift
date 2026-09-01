@@ -40,6 +40,7 @@ public class VideoOutput: NSObject {
   private var textureId: Int64 = -1
   private var currentSize: CGSize = CGSize.zero
   private var disposed: Bool = false
+  private var disposalStarted: Bool = false
   #if os(iOS)
     private var pictureInPictureRenderer: Any?
   #endif
@@ -79,10 +80,30 @@ public class VideoOutput: NSObject {
   }
 
   deinit {
-    worker.cancel()
+    // 正常 Player.dispose 已在 worker 上同步释放纹理；这里只处理引擎异常
+    // 拆除等没有经过显式 dispose 的兜底路径。
+    if !disposalStarted {
+      worker.cancel()
+      disposed = true
+      disposeTextureId()
+    }
+  }
 
-    disposed = true
-    disposeTextureId()
+  public func dispose(completion: @escaping () -> Void) {
+    if disposalStarted {
+      completion()
+      return
+    }
+    disposalStarted = true
+    worker.enqueue { [self] in
+      disposed = true
+      // Flutter 纹理注册表可能继续持有 texture 到 raster 线程下一次
+      // autorelease pool；必须在当前串行 worker 上显式释放 render context。
+      texture.dispose()
+      disposeTextureId()
+      worker.cancel()
+      DispatchQueue.main.async(execute: completion)
+    }
   }
 
   public func setSize(width: Int64?, height: Int64?) {

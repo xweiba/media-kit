@@ -103,9 +103,21 @@ class NativePlayer extends PlatformPlayer {
 
       Initializer(mpv).dispose(ctx);
 
-      Future.delayed(const Duration(seconds: 5), () {
-        mpv.mpv_terminate_destroy(ctx);
-      });
+      if (Platform.isMacOS) {
+        // VideoOutput 与 Dart wakeup callback 已在上方同步解除。macOS 进程退出
+        // 不能留下仍运行 5 秒的 mpv core，否则 AppKit 销毁期间会触发悬空访问。
+        // terminate_destroy 可能阻塞等待内部线程退出，因此放到独立 isolate，
+        // 同时让 dispose Future 真实代表 native context 已完全释放。
+        await compute(
+          _terminateNativePlayer,
+          _NativePlayerDisposeData(ctx.address, NativeLibrary.path),
+          debugLabel: 'media_kit: mpv_terminate_destroy',
+        );
+      } else {
+        Future.delayed(const Duration(seconds: 5), () {
+          mpv.mpv_terminate_destroy(ctx);
+        });
+      }
     }
 
     if (synchronized) {
@@ -2740,6 +2752,19 @@ class _ScreenshotData {
     this.includeLibassSubtitles,
     this.safe,
   );
+}
+
+class _NativePlayerDisposeData {
+  const _NativePlayerDisposeData(this.handle, this.library);
+
+  final int handle;
+  final String library;
+}
+
+void _terminateNativePlayer(_NativePlayerDisposeData data) {
+  final mpv = generated.MPV(DynamicLibrary.open(data.library));
+  final ctx = Pointer<generated.mpv_handle>.fromAddress(data.handle);
+  mpv.mpv_terminate_destroy(ctx);
 }
 
 /// [NativePlayer.screenshot]

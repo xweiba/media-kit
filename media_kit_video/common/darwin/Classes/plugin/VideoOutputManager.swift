@@ -54,14 +54,21 @@ public class VideoOutputManager: NSObject {
   }
 
   public func destroy(
-    handle: Int64
+    handle: Int64,
+    completion: @escaping () -> Void
   ) {
     let videoOutput = self.videoOutputs[handle]
     if videoOutput == nil {
+      completion()
       return
     }
 
-    self.videoOutputs[handle] = nil
+    // 必须等待 VideoOutput 的串行 worker 释放 mpv_render_context 后再回复
+    // Dart；否则 Player.dispose 可能同时销毁 mpv core，造成双向析构竞态。
+    videoOutput!.dispose { [weak self] in
+      self?.videoOutputs[handle] = nil
+      completion()
+    }
   }
 
   public func enterPictureInPicture(handle: Int64) -> Bool {

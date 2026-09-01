@@ -36,8 +36,7 @@ public class TextureHW: NSObject, FlutterTexture, ResizableTextureProtocol {
   }
 
   deinit {
-    disposePixelBuffer()
-    disposeMPV()
+    dispose()
     OpenGLHelpers.deleteTextureCache(textureCache)
     OpenGLHelpers.deletePixelFormat(pixelFormat)
 
@@ -105,7 +104,11 @@ public class TextureHW: NSObject, FlutterTexture, ResizableTextureProtocol {
     )
   }
 
-  private func disposeMPV() {
+  public func dispose() {
+    disposePixelBuffer()
+    guard let renderContext else {
+      return
+    }
     CGLSetCurrentContext(context)
     defer {
       OpenGLHelpers.checkError("disposeMPV")
@@ -114,6 +117,7 @@ public class TextureHW: NSObject, FlutterTexture, ResizableTextureProtocol {
 
     mpv_render_context_set_update_callback(renderContext, nil, nil)
     mpv_render_context_free(renderContext)
+    self.renderContext = nil
   }
 
   public func resize(_ size: CGSize) {
