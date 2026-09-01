@@ -69,6 +69,10 @@ class VideoController {
   /// [Rect] of the video output, received from the native implementation.
   final ValueNotifier<Rect?> rect = ValueNotifier<Rect?>(null);
 
+  /// Current native picture-in-picture lifecycle state.
+  final ValueNotifier<PictureInPictureState> pictureInPictureState =
+      ValueNotifier<PictureInPictureState>(PictureInPictureState.stopped);
+
   /// {@macro video_controller}
   VideoController(
     this.player, {
@@ -105,10 +109,7 @@ class VideoController {
           platform.complete(result);
           notifier.value = result;
         } else if (WebVideoController.supported) {
-          final result = await WebVideoController.create(
-            player,
-            configuration,
-          );
+          final result = await WebVideoController.create(player, configuration);
           platform.complete(result);
           notifier.value = result;
         }
@@ -119,14 +120,20 @@ class VideoController {
           // Add listeners.
           void fn0() => id.value = controller.id.value;
           void fn1() => rect.value = controller.rect.value;
+          void fn2() => pictureInPictureState.value =
+              controller.pictureInPictureState.value;
           fn0();
           fn1();
+          fn2();
           controller.id.addListener(fn0);
           controller.rect.addListener(fn1);
+          controller.pictureInPictureState.addListener(fn2);
           // Remove listeners upon [Player.dispose].
           player.platform?.release.add(() async {
             controller.id.removeListener(fn0);
             controller.rect.removeListener(fn1);
+            controller.pictureInPictureState.removeListener(fn2);
+            pictureInPictureState.value = PictureInPictureState.stopped;
           });
         } else {
           platform.completeError(
@@ -153,20 +160,26 @@ class VideoController {
   /// Remember:
   /// * “Premature optimization is the root of all evil”
   /// * “With great power comes great responsibility”
-  Future<void> setSize({
-    int? width,
-    int? height,
-  }) async {
+  Future<void> setSize({int? width, int? height}) async {
     final instance = await platform.future;
-    return instance.setSize(
-      width: width,
-      height: height,
-    );
+    return instance.setSize(width: width, height: height);
   }
 
   /// A [Future] that completes when the first video frame has been rendered.
   Future<void> get waitUntilFirstFrameRendered async {
     final instance = await platform.future;
     return instance.waitUntilFirstFrameRendered;
+  }
+
+  /// 使用当前视频输出进入系统画中画；不支持的平台返回 false。
+  Future<bool> enterPictureInPicture() async {
+    final instance = await platform.future;
+    return instance.enterPictureInPicture();
+  }
+
+  /// Dismisses native picture-in-picture when supported by the platform.
+  Future<bool> exitPictureInPicture() async {
+    final instance = await platform.future;
+    return instance.exitPictureInPicture();
   }
 }

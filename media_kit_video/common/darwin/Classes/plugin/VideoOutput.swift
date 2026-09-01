@@ -16,6 +16,7 @@ import Foundation
 public class VideoOutput: NSObject {
   // Will be called on the main thread
   public typealias TextureUpdateCallback = (Int64, CGSize) -> Void
+  public typealias PictureInPictureStateCallback = (String, [String: Any]?) -> Void
 
   private static let isSimulator: Bool = {
     let isSim: Bool
@@ -31,6 +32,7 @@ public class VideoOutput: NSObject {
   private let enableHardwareAcceleration: Bool
   private let registry: FlutterTextureRegistry
   private let textureUpdateCallback: TextureUpdateCallback
+  private let pictureInPictureStateCallback: PictureInPictureStateCallback
   private let worker: Worker = .init()
   private var width: Int64?
   private var height: Int64?
@@ -38,12 +40,16 @@ public class VideoOutput: NSObject {
   private var textureId: Int64 = -1
   private var currentSize: CGSize = CGSize.zero
   private var disposed: Bool = false
+  #if os(iOS)
+    private var pictureInPictureRenderer: Any?
+  #endif
 
   init(
     handle: Int64,
     configuration: VideoOutputConfiguration,
     registry: FlutterTextureRegistry,
-    textureUpdateCallback: @escaping TextureUpdateCallback
+    textureUpdateCallback: @escaping TextureUpdateCallback,
+    pictureInPictureStateCallback: @escaping PictureInPictureStateCallback
   ) {
     let handle = OpaquePointer(bitPattern: Int(handle))
     assert(handle != nil, "handle casting")
@@ -54,8 +60,18 @@ public class VideoOutput: NSObject {
     enableHardwareAcceleration = configuration.enableHardwareAcceleration
     self.registry = registry
     self.textureUpdateCallback = textureUpdateCallback
+    self.pictureInPictureStateCallback = pictureInPictureStateCallback
 
     super.init()
+
+    #if os(iOS)
+      if #available(iOS 15.0, *) {
+        pictureInPictureRenderer = PictureInPictureRenderer(
+          handle: self.handle,
+          stateCallback: pictureInPictureStateCallback
+        )
+      }
+    #endif
 
     worker.enqueue {
       self._init()
@@ -173,11 +189,42 @@ public class VideoOutput: NSObject {
     }
 
     texture.render(size)
+    #if os(iOS)
+      if #available(iOS 15.0, *),
+        let renderer = pictureInPictureRenderer as? PictureInPictureRenderer,
+        renderer.shouldCaptureFrame,
+        let pixelBuffer = texture.copyPixelBuffer()?.takeRetainedValue()
+      {
+        renderer.enqueue(pixelBuffer)
+      }
+    #endif
     DispatchQueue.main.sync { [weak self] in
       guard let that = self else { return }
       // Textures must be marked as available from the main thread
       that.registry.textureFrameAvailable(that.textureId)
     }
+  }
+
+  public func enterPictureInPicture() -> Bool {
+    #if os(iOS)
+      if #available(iOS 15.0, *),
+        let renderer = pictureInPictureRenderer as? PictureInPictureRenderer
+      {
+        return renderer.start()
+      }
+    #endif
+    return false
+  }
+
+  public func exitPictureInPicture() -> Bool {
+    #if os(iOS)
+      if #available(iOS 15.0, *),
+        let renderer = pictureInPictureRenderer as? PictureInPictureRenderer
+      {
+        return renderer.stop()
+      }
+    #endif
+    return false
   }
 
     private var videoSize: CGSize {

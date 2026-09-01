@@ -263,6 +263,8 @@ class VideoState extends State<Video> with WidgetsBindingObserver {
 
     if (newParams != currentParams) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
+        // The widget may be replaced by a source failover before this frame.
+        if (!mounted) return;
         videoViewParametersNotifier.value = newParams;
       });
     }

@@ -3,6 +3,8 @@
 /// Copyright © 2021 & onwards, Hitesh Kumar Saini <saini123hitesh@gmail.com>.
 /// All rights reserved.
 /// Use of this source code is governed by MIT license that can be found in the LICENSE file.
+import 'dart:async';
+
 import 'package:flutter/widgets.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
@@ -36,6 +38,16 @@ class FullscreenInheritedWidget extends InheritedWidget {
     return result!;
   }
 
+  /// 先完成原生窗口退出动画，再弹出 Flutter 全屏路由。
+  ///
+  /// 原生窗口与 Flutter 路由同时迁移会在 macOS 上产生瞬时负尺寸，
+  /// 因此控件按钮、返回键和系统返回手势必须复用这个串行入口。
+  static Future<void> exit(BuildContext context) async {
+    final state = context
+        .findAncestorStateOfType<_FullscreenInheritedWidgetPopScopeState>();
+    await state?.exitFullscreen();
+  }
+
   @override
   bool updateShouldNotify(FullscreenInheritedWidget oldWidget) =>
       identical(parent, oldWidget.parent);
@@ -59,12 +71,33 @@ class _FullscreenInheritedWidgetPopScope extends StatefulWidget {
 
 class _FullscreenInheritedWidgetPopScopeState
     extends State<_FullscreenInheritedWidgetPopScope> {
+  bool _canPop = false;
+  Future<void>? _exitFuture;
+
+  Future<void> exitFullscreen() {
+    return _exitFuture ??= _exitFullscreen();
+  }
+
+  Future<void> _exitFullscreen() async {
+    await onExitFullscreen(context)?.call();
+    if (!mounted) return;
+
+    setState(() => _canPop = true);
+    // PopScope 在下一帧才会把新的 canPop 注册给 Navigator。
+    // 立即 maybePop 会再次被旧状态拦截，导致全屏路由永远无法退出。
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted) return;
+    await Navigator.of(context).maybePop();
+  }
+
   @override
   Widget build(BuildContext context) {
     return PopScope(
-      onPopInvokedWithResult: (_, __) {
-        // Make sure to exit native fullscreen when this route is popped from the navigator.
-        onExitFullscreen(context)?.call();
+      canPop: _canPop,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) {
+          unawaited(exitFullscreen());
+        }
       },
       child: widget.child,
     );

@@ -5,11 +5,18 @@
 #endif
 
 public class VideoOutputManager: NSObject {
+  public typealias PictureInPictureStateCallback = (Int64, String, [String: Any]?) -> Void
+
   private let registry: FlutterTextureRegistry
+  private let pictureInPictureStateCallback: PictureInPictureStateCallback
   private var videoOutputs = [Int64: VideoOutput]()
 
-  init(registry: FlutterTextureRegistry) {
+  init(
+    registry: FlutterTextureRegistry,
+    pictureInPictureStateCallback: @escaping PictureInPictureStateCallback
+  ) {
     self.registry = registry
+    self.pictureInPictureStateCallback = pictureInPictureStateCallback
   }
 
   public func create(
@@ -21,7 +28,10 @@ public class VideoOutputManager: NSObject {
       handle: handle,
       configuration: configuration,
       registry: self.registry,
-      textureUpdateCallback: textureUpdateCallback
+      textureUpdateCallback: textureUpdateCallback,
+      pictureInPictureStateCallback: { [weak self] state, error in
+        self?.pictureInPictureStateCallback(handle, state, error)
+      }
     )
 
     self.videoOutputs[handle] = videoOutput
@@ -52,5 +62,13 @@ public class VideoOutputManager: NSObject {
     }
 
     self.videoOutputs[handle] = nil
+  }
+
+  public func enterPictureInPicture(handle: Int64) -> Bool {
+    videoOutputs[handle]?.enterPictureInPicture() ?? false
+  }
+
+  public func exitPictureInPicture(handle: Int64) -> Bool {
+    videoOutputs[handle]?.exitPictureInPicture() ?? false
   }
 }

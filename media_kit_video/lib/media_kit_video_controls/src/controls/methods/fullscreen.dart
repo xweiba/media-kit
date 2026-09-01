@@ -92,14 +92,12 @@ Future<void> exitFullscreen(BuildContext context) {
   return lock.synchronized(() async {
     if (isFullscreen(context)) {
       if (context.mounted) {
-        await Navigator.of(context).maybePop();
-        // It is known that this [context] will have a [FullscreenInheritedWidget] above it.
-        if (context.mounted) {
-          FullscreenInheritedWidget.of(context).parent.refreshView();
-        }
+        // 先保留父 Video，再由全屏作用域串行退出原生窗口并弹出路由。
+        // 路由弹出后 context 会失效，不能再通过它查找父状态。
+        final parent = FullscreenInheritedWidget.of(context).parent;
+        await FullscreenInheritedWidget.exit(context);
+        parent.refreshView();
       }
-      // [exitNativeFullscreen] is moved to [WillPopScope] in [FullscreenInheritedWidget].
-      // This is because [exitNativeFullscreen] needs to be called when the user presses the back button.
     }
   });
 }

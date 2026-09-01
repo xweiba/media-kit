@@ -1,6 +1,6 @@
 import Foundation
 
 public protocol UtilsProtocol: NSObject {
-  func enterNativeFullscreen()
-  func exitNativeFullscreen()
+  func enterNativeFullscreen(completion: @escaping () -> Void)
+  func exitNativeFullscreen(completion: @escaping () -> Void)
 }

@@ -10,6 +10,24 @@ import 'package:media_kit/media_kit.dart';
 
 import 'package:media_kit_video/src/video_controller/video_controller.dart';
 
+/// Native picture-in-picture lifecycle reported by the platform video output.
+enum PictureInPictureState {
+  /// Picture-in-picture is not currently presented.
+  stopped,
+
+  /// The platform accepted a start request but has not presented PiP yet.
+  starting,
+
+  /// Picture-in-picture is visible and controlled by the operating system.
+  active,
+
+  /// The operating system is dismissing picture-in-picture.
+  stopping,
+
+  /// The latest start request failed.
+  failed,
+}
+
 /// {@template platform_video_controller}
 ///
 /// PlatformVideoController
@@ -34,6 +52,10 @@ abstract class PlatformVideoController {
   /// [Rect] of the video output, received from the native implementation.
   final ValueNotifier<Rect?> rect = ValueNotifier<Rect?>(null);
 
+  /// Current native picture-in-picture lifecycle state.
+  final ValueNotifier<PictureInPictureState> pictureInPictureState =
+      ValueNotifier<PictureInPictureState>(PictureInPictureState.stopped);
+
   /// {@macro platform_video_controller}
   PlatformVideoController(
     this.player,
@@ -55,6 +77,12 @@ abstract class PlatformVideoController {
   Future<void> get waitUntilFirstFrameRendered =>
       waitUntilFirstFrameRenderedCompleter.future;
 
+  /// Requests native picture-in-picture when supported by this implementation.
+  Future<bool> enterPictureInPicture() async => false;
+
+  /// Requests dismissal of native picture-in-picture when currently active.
+  Future<bool> exitPictureInPicture() async => false;
+
   /// [Completer] used to signal the decoding & rendering of the first video frame.
   /// Use [waitUntilFirstFrameRendered] to wait for the first frame to be rendered.
   @protected
@@ -63,6 +91,7 @@ abstract class PlatformVideoController {
   void dispose() {
     id.dispose();
     rect.dispose();
+    pictureInPictureState.dispose();
   }
 }
 

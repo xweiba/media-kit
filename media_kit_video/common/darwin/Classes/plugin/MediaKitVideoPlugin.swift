@@ -41,7 +41,20 @@ public class MediaKitVideoPlugin: NSObject, FlutterPlugin {
   ) {
     self.channel = channel
     videoOutputManager = VideoOutputManager(
-      registry: registry
+      registry: registry,
+      pictureInPictureStateCallback: { handle, state, error in
+        var arguments: [String: Any] = [
+          "handle": handle,
+          "state": state,
+        ]
+        if let error {
+          arguments["error"] = error
+        }
+        channel.invokeMethod(
+          "VideoOutput.PictureInPictureState",
+          arguments: arguments
+        )
+      }
     )
     self.utils = utils
   }
@@ -57,6 +70,10 @@ public class MediaKitVideoPlugin: NSObject, FlutterPlugin {
       handleSetSizeMethodCall(call.arguments, result)
     case "VideoOutputManager.Dispose":
       handleDisposeMethodCall(call.arguments, result)
+    case "VideoOutputManager.EnterPictureInPicture":
+      handleEnterPictureInPictureMethodCall(call.arguments, result)
+    case "VideoOutputManager.ExitPictureInPicture":
+      handleExitPictureInPictureMethodCall(call.arguments, result)
     case "Utils.EnterNativeFullscreen":
       handleEnterNativeFullscreenMethodCall(call.arguments, result)
     case "Utils.ExitNativeFullscreen":
@@ -64,6 +81,30 @@ public class MediaKitVideoPlugin: NSObject, FlutterPlugin {
     default:
       result(FlutterMethodNotImplemented)
     }
+  }
+
+  private func handleEnterPictureInPictureMethodCall(
+    _ arguments: Any?,
+    _ result: FlutterResult
+  ) {
+    let args = arguments as? [String: Any]
+    let handle = Int64(args?["handle"] as? String ?? "")
+    guard let handle else {
+      return result(false)
+    }
+    result(videoOutputManager.enterPictureInPicture(handle: handle))
+  }
+
+  private func handleExitPictureInPictureMethodCall(
+    _ arguments: Any?,
+    _ result: FlutterResult
+  ) {
+    let args = arguments as? [String: Any]
+    let handle = Int64(args?["handle"] as? String ?? "")
+    guard let handle else {
+      return result(false)
+    }
+    result(videoOutputManager.exitPictureInPicture(handle: handle))
   }
 
   private func handleCreateMethodCall(
@@ -144,25 +185,27 @@ public class MediaKitVideoPlugin: NSObject, FlutterPlugin {
 
   private func handleEnterNativeFullscreenMethodCall(
     _: Any?,
-    _ result: FlutterResult
+    _ result: @escaping FlutterResult
   ) {
     if utils == nil {
       return result(FlutterMethodNotImplemented)
     }
 
-    utils?.enterNativeFullscreen()
-    result(nil)
+    utils?.enterNativeFullscreen {
+      result(nil)
+    }
   }
 
   private func handleExitNativeFullscreenMethodCall(
     _: Any?,
-    _ result: FlutterResult
+    _ result: @escaping FlutterResult
   ) {
     if utils == nil {
       return result(FlutterMethodNotImplemented)
     }
 
-    utils?.exitNativeFullscreen()
-    result(nil)
+    utils?.exitNativeFullscreen {
+      result(nil)
+    }
   }
 }
