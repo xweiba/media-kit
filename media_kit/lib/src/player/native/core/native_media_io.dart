@@ -42,6 +42,18 @@ Iterable<String> nativeMediaIODemuxerOptions(
   if (providers.isNotEmpty) yield 'allow_custom_io=1';
 }
 
+/// Returns mpv properties required for playlists which reference a registered
+/// host-owned protocol.
+///
+/// mpv applies its own playlist safety gate before FFmpeg sees the protocol
+/// whitelist. The opt-in remains scoped to players with an explicitly
+/// registered native provider, so ordinary network playlists keep upstream
+/// safety behavior.
+Map<String, String> nativeMediaIOPlayerProperties(
+  List<NativeMediaIOProvider> providers,
+) =>
+    providers.isEmpty ? const {} : const {'load-unsafe-playlists': 'yes'};
+
 /// Validates native media I/O descriptors before any protocol is registered.
 ///
 /// Validation is completed as a separate pass because libmpv does not provide

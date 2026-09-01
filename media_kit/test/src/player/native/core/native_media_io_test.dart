@@ -34,6 +34,21 @@ void main() {
     });
   });
 
+  group('nativeMediaIOPlayerProperties', () {
+    test('keeps unsafe playlist loading disabled without a provider', () {
+      expect(nativeMediaIOPlayerProperties(const []), isEmpty);
+    });
+
+    test('allows nested URLs after a provider is explicitly registered', () {
+      expect(
+        nativeMediaIOPlayerProperties(const [
+          NativeMediaIOProvider(protocol: 'mediaio', openCallback: 1),
+        ]),
+        containsPair('load-unsafe-playlists', 'yes'),
+      );
+    });
+  });
+
   group('validateNativeMediaIOProviders', () {
     test('accepts a native provider descriptor', () {
       expect(

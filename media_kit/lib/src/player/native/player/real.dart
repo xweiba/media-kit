@@ -2416,6 +2416,7 @@ class NativePlayer extends PlatformPlayer {
         'dither': 'no',
         'cache': 'yes',
         'cache-on-disk': configuration.cacheOnDisk ? 'yes' : 'no',
+        ...nativeMediaIOPlayerProperties(configuration.mediaIOProviders),
         'hr-seek': 'yes',
         'hr-seek-framedrop': 'no',
         'correct-downscaling': 'no',
