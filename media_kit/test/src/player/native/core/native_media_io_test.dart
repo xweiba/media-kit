@@ -8,6 +8,17 @@ import 'package:media_kit/src/player/native/core/native_media_io.dart';
 import 'package:test/test.dart';
 
 void main() {
+  group('PlayerConfiguration.cacheOnDisk', () {
+    test('keeps mpv disk cache enabled by default', () {
+      expect(const PlayerConfiguration().cacheOnDisk, isTrue);
+    });
+
+    test('allows host-owned media I/O to disable duplicate disk cache', () {
+      expect(
+          const PlayerConfiguration(cacheOnDisk: false).cacheOnDisk, isFalse);
+    });
+  });
+
   group('nativeMediaIODemuxerOptions', () {
     test('keeps custom nested I/O disabled without a provider', () {
       expect(nativeMediaIODemuxerOptions(const []), isEmpty);
