@@ -2446,6 +2446,7 @@ class NativePlayer extends PlatformPlayer {
             'strict=experimental',
             'allowed_extensions=ALL',
             'hls_ad_filter=${configuration.adBlocker ? 1 : 0}',
+            ...nativeMediaIODemuxerOptions(configuration.mediaIOProviders),
             'protocol_whitelist=[${{
               ...configuration.protocolWhitelist,
               ...configuration.mediaIOProviders.map(

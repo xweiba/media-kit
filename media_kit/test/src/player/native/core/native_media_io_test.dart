@@ -8,6 +8,21 @@ import 'package:media_kit/src/player/native/core/native_media_io.dart';
 import 'package:test/test.dart';
 
 void main() {
+  group('nativeMediaIODemuxerOptions', () {
+    test('keeps custom nested I/O disabled without a provider', () {
+      expect(nativeMediaIODemuxerOptions(const []), isEmpty);
+    });
+
+    test('enables custom nested I/O for a registered provider', () {
+      expect(
+        nativeMediaIODemuxerOptions(const [
+          NativeMediaIOProvider(protocol: 'mediaio', openCallback: 1),
+        ]),
+        contains('allow_custom_io=1'),
+      );
+    });
+  });
+
   group('validateNativeMediaIOProviders', () {
     test('accepts a native provider descriptor', () {
       expect(

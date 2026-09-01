@@ -31,6 +31,17 @@ typedef _MpvStreamCbAddRoDart = int Function(
 
 final RegExp _protocolPattern = RegExp(r'^[a-z][a-z0-9+.-]*$');
 
+/// Returns the FFmpeg demuxer options required by registered native readers.
+///
+/// The downstream FFmpeg patch is deliberately default-off. Enabling custom
+/// nested I/O only when a provider is present preserves upstream behavior for
+/// players which do not register a host-owned protocol.
+Iterable<String> nativeMediaIODemuxerOptions(
+  List<NativeMediaIOProvider> providers,
+) sync* {
+  if (providers.isNotEmpty) yield 'allow_custom_io=1';
+}
+
 /// Validates native media I/O descriptors before any protocol is registered.
 ///
 /// Validation is completed as a separate pass because libmpv does not provide
