@@ -1,6 +1,6 @@
 all: Frameworks/.symlinks
 
-MPV_XCFRAMEWORKS_VERSION=0.6.8-mediaio.1
+MPV_XCFRAMEWORKS_VERSION=0.6.8-mediaio.2
 MPV_XCFRAMEWORKS_NAMES=Ass Avcodec Avfilter Avformat Avutil Dav1d Freetype Fribidi Harfbuzz Mbedcrypto Mbedtls Mbedx509 Mpv Png16 Swresample Swscale Uchardet Xml2
 MPV_XCFRAMEWORKS_PREFIX=libmpv-xcframeworks_${MPV_XCFRAMEWORKS_VERSION}_macos-universal-video-default
 MPV_XCFRAMEWORKS_RELEASE=https://github.com/xweiba/libmpv-darwin-build/releases/download/${MPV_XCFRAMEWORKS_VERSION}
