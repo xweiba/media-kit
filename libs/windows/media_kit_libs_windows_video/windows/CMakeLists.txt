@@ -68,15 +68,16 @@ string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" LIBMPV_TARGET_PROCESSOR)
 string(TOLOWER "${CMAKE_GENERATOR_PLATFORM}" LIBMPV_GENERATOR_PLATFORM)
 
 if(LIBMPV_TARGET_PROCESSOR MATCHES "^(arm64|aarch64)$" OR LIBMPV_GENERATOR_PLATFORM MATCHES "^(arm64|aarch64)$")
+  # NOTE(mediaio): aarch64 mediaio build pending; keep upstream dev archive for now.
   set(LIBMPV "mpv-dev-aarch64-20260811-git-ad59ff1.zip")
   set(LIBMPV_SHA256 "1b0d58db5bc1b24437d63120ae6e1b0d887ec504e53523dc4666893d00e7f4e8")
 else()
-  set(LIBMPV "mpv-dev-x86_64-20260811-git-ad59ff1.7z")
-  set(LIBMPV_SHA256 "0161ad026f9ebd418a9b660c8e8c569f7959b5bb8e5f4a63e462ffc73327d4d8")
+  set(LIBMPV "mpv-dev-x86_64-20260904-git-32a164c.7z")
+  set(LIBMPV_SHA256 "f815853837f1aabb05530bf67feee1e6cc4ee31a7c33aee10314bf3ec57a3c0d")
 endif()
 
-# Download URL of the libmpv archive.
-set(LIBMPV_URL "https://github.com/Predidit/libmpv-win32-video-cmake/releases/download/20260811/${LIBMPV}")
+# Download URL of the libmpv archive (xweiba mediaio build).
+set(LIBMPV_URL "https://github.com/xweiba/libmpv-win32-video-cmake/releases/download/20260904/${LIBMPV}")
 
 # Download location of the libmpv archive.
 set(LIBMPV_ARCHIVE "${CMAKE_BINARY_DIR}/${LIBMPV}")
@@ -142,5 +143,7 @@ target_link_libraries(
 set(
   media_kit_libs_windows_video_bundled_libraries
   "${LIBMPV_SRC}/libmpv-2.dll"
+  "${LIBMPV_SRC}/libgcc_s_seh-1.dll"
+  "${LIBMPV_SRC}/libwinpthread-1.dll"
   PARENT_SCOPE
 )
