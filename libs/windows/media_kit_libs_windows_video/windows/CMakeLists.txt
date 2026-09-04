@@ -72,8 +72,9 @@ if(LIBMPV_TARGET_PROCESSOR MATCHES "^(arm64|aarch64)$" OR LIBMPV_GENERATOR_PLATF
   set(LIBMPV "mpv-dev-aarch64-20260811-git-ad59ff1.zip")
   set(LIBMPV_SHA256 "1b0d58db5bc1b24437d63120ae6e1b0d887ec504e53523dc4666893d00e7f4e8")
 else()
-  set(LIBMPV "mpv-dev-x86_64-20260904-git-32a164c.7z")
-  set(LIBMPV_SHA256 "f815853837f1aabb05530bf67feee1e6cc4ee31a7c33aee10314bf3ec57a3c0d")
+  # x86_64 mediaio build (zip: CMake -E tar cannot read 7z on all hosts).
+  set(LIBMPV "mpv-dev-x86_64-20260904-git-32a164c.zip")
+  set(LIBMPV_SHA256 "73d91ea0555db7d6229b8965c51bb585b657d07e47c1081044c379ff9cbb1e68")
 endif()
 
 # Download URL of the libmpv archive (xweiba mediaio build).
