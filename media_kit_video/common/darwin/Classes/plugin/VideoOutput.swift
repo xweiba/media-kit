@@ -41,7 +41,7 @@ public class VideoOutput: NSObject {
   private var currentSize: CGSize = CGSize.zero
   private var disposed: Bool = false
   private var disposalStarted: Bool = false
-  #if os(iOS)
+  #if os(iOS) || os(macOS)
     private var pictureInPictureRenderer: Any?
   #endif
 
@@ -65,8 +65,8 @@ public class VideoOutput: NSObject {
 
     super.init()
 
-    #if os(iOS)
-      if #available(iOS 15.0, *) {
+    #if os(iOS) || os(macOS)
+      if #available(iOS 15.0, macOS 12.0, *) {
         pictureInPictureRenderer = PictureInPictureRenderer(
           handle: self.handle,
           stateCallback: pictureInPictureStateCallback
@@ -209,9 +209,11 @@ public class VideoOutput: NSObject {
       return
     }
 
-    texture.render(size)
-    #if os(iOS)
-      if #available(iOS 15.0, *),
+    guard texture.render(size) else {
+      return
+    }
+    #if os(iOS) || os(macOS)
+      if #available(iOS 15.0, macOS 12.0, *),
         let renderer = pictureInPictureRenderer as? PictureInPictureRenderer,
         renderer.shouldCaptureFrame,
         let pixelBuffer = texture.copyPixelBuffer()?.takeRetainedValue()
@@ -227,8 +229,8 @@ public class VideoOutput: NSObject {
   }
 
   public func enterPictureInPicture() -> Bool {
-    #if os(iOS)
-      if #available(iOS 15.0, *),
+    #if os(iOS) || os(macOS)
+      if #available(iOS 15.0, macOS 12.0, *),
         let renderer = pictureInPictureRenderer as? PictureInPictureRenderer
       {
         return renderer.start()
@@ -238,8 +240,8 @@ public class VideoOutput: NSObject {
   }
 
   public func exitPictureInPicture() -> Bool {
-    #if os(iOS)
-      if #available(iOS 15.0, *),
+    #if os(iOS) || os(macOS)
+      if #available(iOS 15.0, macOS 12.0, *),
         let renderer = pictureInPictureRenderer as? PictureInPictureRenderer
       {
         return renderer.stop()

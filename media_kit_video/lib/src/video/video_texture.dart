@@ -17,7 +17,6 @@ import 'package:media_kit_video/src/utils/dispose_safe_notifer.dart';
 import 'package:media_kit_video/src/utils/wakelock.dart';
 import 'package:media_kit_video/src/video_view_parameters.dart';
 import 'package:media_kit_video/src/video_controller/video_controller.dart';
-import 'package:media_kit_video/src/video_controller/platform_video_controller.dart';
 
 /// {@template video}
 ///
@@ -381,64 +380,57 @@ class VideoState extends State<Video> with WidgetsBindingObserver {
               children: [
                 ClipRect(
                   child: FittedBox(
-                    fit: videoViewParameters.fit,
-                    alignment: videoViewParameters.alignment,
-                    child: ValueListenableBuilder<PlatformVideoController?>(
-                      valueListenable: widget.controller.notifier,
-                      builder: (context, notifier, _) => notifier == null
-                          ? const SizedBox.shrink()
-                          : ValueListenableBuilder<int?>(
-                              valueListenable: notifier.id,
-                              builder: (context, id, _) {
-                                return ValueListenableBuilder<Rect?>(
-                                  valueListenable: notifier.rect,
-                                  builder: (context, rect, _) {
-                                    if (id != null &&
-                                        rect != null &&
-                                        _visible) {
-                                      return SizedBox(
-                                        // Apply aspect ratio if provided.
-                                        width:
-                                            videoViewParameters.aspectRatio ==
-                                                    null
-                                                ? rect.width
-                                                : rect.height *
-                                                    videoViewParameters
-                                                        .aspectRatio!,
-                                        height: rect.height,
-                                        child: Stack(
-                                          children: [
-                                            const SizedBox(),
-                                            Positioned.fill(
-                                              child: Texture(
-                                                textureId: id,
-                                                filterQuality:
-                                                    videoViewParameters
-                                                        .filterQuality,
-                                              ),
-                                            ),
-                                            // Keep the |Texture| hidden before the first frame renders. In native implementation, if no default frame size is passed (through VideoController), a starting 1 pixel sized texture/surface is created to initialize the render context & check for H/W support.
-                                            // This is then resized based on the video dimensions & accordingly texture ID, texture, EGLDisplay, EGLSurface etc. (depending upon platform) are also changed. Just don't show that 1 pixel texture to the UI.
-                                            // NOTE: Unmounting |Texture| causes the |MarkTextureFrameAvailable| to not do anything on GNU/Linux.
-                                            if (rect.width <= 1.0 &&
-                                                rect.height <= 1.0)
-                                              Positioned.fill(
-                                                child: Container(
-                                                  color:
-                                                      videoViewParameters.fill,
-                                                ),
-                                              ),
-                                          ],
-                                        ),
-                                      );
-                                    }
-                                    return const SizedBox.shrink();
-                                  },
+                          fit: videoViewParameters.fit,
+                          alignment: videoViewParameters.alignment,
+                          // 纹理初始化会经历空值、1px 占位和真实尺寸三个阶段。保持固定
+                          // 根节点可避免平台辅助功能在子树反复卸载时引用已移除的节点。
+                          child: ExcludeSemantics(
+                            child: ValueListenableBuilder<VideoOutputState>(
+                              valueListenable: widget.controller.output,
+                              builder: (context, output, _) {
+                                final id = output.id;
+                                final rect = output.rect;
+                                final ready =
+                                    id != null && rect != null && _visible;
+                                final width = rect == null
+                                    ? 1.0
+                                    : videoViewParameters.aspectRatio == null
+                                        ? rect.width
+                                        : rect.height *
+                                            videoViewParameters.aspectRatio!;
+                                final height = rect?.height ?? 1.0;
+                                final hidden =
+                                    !ready || width <= 1.0 || height <= 1.0;
+
+                                return SizedBox(
+                                  width: width <= 0 ? 1.0 : width,
+                                  height: height <= 0 ? 1.0 : height,
+                                  child: Stack(
+                                    fit: StackFit.expand,
+                                    children: [
+                                      // 未注册的 0 号纹理只会绘制空帧。始终挂载同一个
+                                      // RenderTexture，真实 ID 到达时只更新属性，不插入
+                                      // 新 RenderObject。
+                                      Texture(
+                                        textureId: id ?? 0,
+                                        filterQuality:
+                                            videoViewParameters.filterQuality,
+                                      ),
+                                      // Linux 必须保留已挂载的 Texture；这里只用覆盖层
+                                      // 隐藏初始化占位纹理，不通过卸载来切换可见性。
+                                      ColoredBox(
+                                        color: hidden
+                                            ? videoViewParameters.fill
+                                            : videoViewParameters.fill
+                                                .withValues(alpha: 0),
+                                      ),
+                                    ],
+                                  ),
                                 );
                               },
                             ),
-                    ),
-                  ),
+                          ),
+                        ),
                 ),
                 if (videoViewParameters.subtitleViewConfiguration.visible &&
                     !(widget.controller.player.platform?.configuration.libass ??

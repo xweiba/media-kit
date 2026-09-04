@@ -4,6 +4,7 @@
 /// All rights reserved.
 /// Use of this source code is governed by MIT license that can be found in the LICENSE file.
 import 'dart:async';
+import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
 import 'package:path/path.dart' as path;
@@ -47,15 +48,24 @@ class NativeReferenceHolder {
   }
 
   void _ensureInitialized(NativeReferenceHolderCallback callback) async {
-    if (!await _file.exists_()) {
+    final processIdentity = await _getProcessIdentity();
+    final persisted = await _readPersistedReferenceBuffer();
+
+    if (persisted == null || persisted.processIdentity != processIdentity) {
       // Allocate reference buffer.
       _referenceBuffer = calloc<IntPtr>(kReferenceBufferSize);
       final address = _referenceBuffer.address;
-      await _file.write_(address.toString());
+      await _file.write_(
+        jsonEncode({
+          'version': 1,
+          'processIdentity': processIdentity,
+          'bufferAddress': address,
+        }),
+      );
       print('$kTag Allocated $address');
     } else {
       // Locate reference buffer.
-      final address = int.parse((await _file.readAsString_())!);
+      final address = persisted.bufferAddress;
       _referenceBuffer = Pointer<IntPtr>.fromAddress(address);
       print('$kTag Located $address');
     }
@@ -74,6 +84,46 @@ class NativeReferenceHolder {
     callback(references);
 
     _completer.complete();
+  }
+
+  /// 返回热重启期间稳定、但操作系统复用 PID 后会变化的进程实例标识。
+  Future<String> _getProcessIdentity() async {
+    final vmMarker = NativeApi.initializeApiDLData.address;
+    if (Platform.isMacOS || Platform.isLinux) {
+      try {
+        final result = await Process.run(
+          'ps',
+          ['-p', '$pid', '-o', 'lstart='],
+        );
+        final startedAt = (result.stdout as String).trim();
+        if (result.exitCode == 0 && startedAt.isNotEmpty) {
+          return '$vmMarker:$startedAt';
+        }
+      } catch (_) {
+        // 沙盒平台可能禁止子进程；VM 标识仍能覆盖常见的进程复用场景。
+      }
+    }
+    return '$vmMarker';
+  }
+
+  Future<_PersistedReferenceBuffer?> _readPersistedReferenceBuffer() async {
+    if (!await _file.exists_()) return null;
+    try {
+      final contents = await _file.readAsString_();
+      final value = jsonDecode(contents!) as Map<String, dynamic>;
+      if (value['version'] != 1) return null;
+      final processIdentity = value['processIdentity'];
+      final bufferAddress = value['bufferAddress'];
+      if (processIdentity is! String ||
+          bufferAddress is! int ||
+          bufferAddress == 0) {
+        return null;
+      }
+      return _PersistedReferenceBuffer(processIdentity, bufferAddress);
+    } catch (_) {
+      // 旧版本只保存裸地址，无法证明它属于当前进程，必须重新分配。
+      return null;
+    }
   }
 
   /// Saves the reference.
@@ -131,4 +181,11 @@ class NativeReferenceHolder {
   late final Pointer<IntPtr> _referenceBuffer;
 
   static const String kTag = 'media_kit: NativeReferenceHolder:';
+}
+
+class _PersistedReferenceBuffer {
+  final String processIdentity;
+  final int bufferAddress;
+
+  const _PersistedReferenceBuffer(this.processIdentity, this.bufferAddress);
 }

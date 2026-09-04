@@ -158,10 +158,20 @@ public class TextureHW: NSObject, FlutterTexture, ResizableTextureProtocol {
     textureContexts.reinit(objects: [], skipCheckArgs: true)
   }
 
-  public func render(_ size: CGSize) {
+  public func render(_ size: CGSize) -> Bool {
+    guard let renderContext else {
+      return false
+    }
+    // update callback 不保证携带新画面；过滤属性和冗余通知，避免唤醒
+    // Flutter raster。检查与实际渲染必须在同一串行 worker 上完成。
+    let flags = mpv_render_context_update(renderContext)
+    guard flags & UInt64(MPV_RENDER_UPDATE_FRAME.rawValue) != 0 else {
+      return false
+    }
+
     let textureContext = textureContexts.nextAvailable()
     if textureContext == nil {
-      return
+      return false
     }
 
     CGLSetCurrentContext(context)
@@ -192,6 +202,7 @@ public class TextureHW: NSObject, FlutterTexture, ResizableTextureProtocol {
     glFlush()
 
     textureContexts.pushAsReady(textureContext!)
+    return true
   }
 
   static private func getProcAddress(

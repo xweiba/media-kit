@@ -116,10 +116,20 @@ public class TextureSW: NSObject, FlutterTexture, ResizableTextureProtocol {
     textureContexts.reinit(objects: [], skipCheckArgs: true)
   }
 
-  public func render(_ size: CGSize) {
+  public func render(_ size: CGSize) -> Bool {
+    guard let renderContext else {
+      return false
+    }
+    // mpv 的更新回调也可能由属性变化或合并通知触发。只有明确包含
+    // MPV_RENDER_UPDATE_FRAME 时才拉取像素，避免无效 CPU 拷贝和 Flutter 合成。
+    let flags = mpv_render_context_update(renderContext)
+    guard flags & UInt64(MPV_RENDER_UPDATE_FRAME.rawValue) != 0 else {
+      return false
+    }
+
     let textureContext = textureContexts.nextAvailable()
     if textureContext == nil {
-      return
+      return false
     }
 
     CVPixelBufferLockBaseAddress(
@@ -159,5 +169,6 @@ public class TextureSW: NSObject, FlutterTexture, ResizableTextureProtocol {
     mpv_render_context_render(renderContext, &params)
 
     textureContexts.pushAsReady(textureContext!)
+    return true
   }
 }

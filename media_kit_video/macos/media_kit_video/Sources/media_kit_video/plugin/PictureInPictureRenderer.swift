@@ -7,8 +7,8 @@ import CoreVideo
   import Mpv
 #endif
 
-/// 把 mpv 已渲染的同一像素帧送入系统 PiP，不创建第二个播放器或网络请求。
-@available(iOS 15.0, *)
+/// 把 mpv 已渲染的同一像素帧送入 macOS 系统画中画，不创建第二播放器或网络请求。
+@available(macOS 12.0, *)
 final class PictureInPictureRenderer: NSObject,
   AVPictureInPictureSampleBufferPlaybackDelegate,
   AVPictureInPictureControllerDelegate
@@ -17,7 +17,6 @@ final class PictureInPictureRenderer: NSObject,
   private let stateCallback: (String, [String: Any]?) -> Void
   private let displayLayer = AVSampleBufferDisplayLayer()
   private let captureLock = NSLock()
-  private weak var hostLayer: CALayer?
   private var captureRequested = false
   private var startRequested = false
   private var requestGeneration = 0
@@ -28,7 +27,6 @@ final class PictureInPictureRenderer: NSObject,
     )
     let controller = AVPictureInPictureController(contentSource: source)
     controller.delegate = self
-    controller.canStartPictureInPictureAutomaticallyFromInline = true
     controller.requiresLinearPlayback = false
     return controller
   }()
@@ -41,15 +39,6 @@ final class PictureInPictureRenderer: NSObject,
     self.stateCallback = stateCallback
     super.init()
     displayLayer.videoGravity = .resizeAspect
-  }
-
-  deinit {
-    if Thread.isMainThread {
-      displayLayer.removeFromSuperlayer()
-    } else {
-      let layer = displayLayer
-      DispatchQueue.main.async { layer.removeFromSuperlayer() }
-    }
   }
 
   /// 仅在准备或显示 PiP 时复制 mpv 像素帧，避免普通播放长期承担额外内存带宽。
@@ -103,23 +92,6 @@ final class PictureInPictureRenderer: NSObject,
       reportFailure(domain: "AVPictureInPictureController", code: -1)
       return false
     }
-    do {
-      let session = AVAudioSession.sharedInstance()
-      try session.setCategory(.playback, mode: .moviePlayback)
-      try session.setActive(true)
-    } catch {
-      let error = error as NSError
-      reportFailure(domain: error.domain, code: error.code)
-      return false
-    }
-    // `AVPictureInPictureController.ContentSource` 不只需要 sample buffer，承载
-    // buffer 的 layer 还必须属于前台 UIWindow 的可见图层树，否则
-    // `isPictureInPicturePossible` 会一直保持 false。Flutter 正片仍由上层
-    // Texture 展示；该 layer 插在根图层最底部，只作为系统 PiP 的内容源。
-    guard attachDisplayLayerToActiveWindow() else {
-      reportFailure(domain: "AVPictureInPictureController", code: -3)
-      return false
-    }
     if controller.isPictureInPictureActive || startRequested {
       return true
     }
@@ -128,7 +100,8 @@ final class PictureInPictureRenderer: NSObject,
     startRequested = true
     setCaptureRequested(true)
     stateCallback("starting", nil)
-    // ContentSource 只有收到首个 sample 后才会变为 possible，因此等待渲染回调启动。
+    // ContentSource 收到首个 sample 后才可能启动；超时必须撤销帧复制，
+    // 避免系统拒绝 PiP 后继续承担无意义的内存带宽。
     DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
       guard let self,
         self.startRequested,
@@ -149,46 +122,12 @@ final class PictureInPictureRenderer: NSObject,
     guard startRequested else { return false }
     startRequested = false
     setCaptureRequested(false)
-    detachDisplayLayer()
     stateCallback("stopped", nil)
     return true
   }
 
-  private func attachDisplayLayerToActiveWindow() -> Bool {
-    if displayLayer.superlayer != nil { return true }
-    let scenes = UIApplication.shared.connectedScenes
-      .compactMap { $0 as? UIWindowScene }
-      .filter {
-        $0.activationState == .foregroundActive ||
-          $0.activationState == .foregroundInactive
-      }
-    let window = scenes
-      .flatMap(\.windows)
-      .first(where: \.isKeyWindow) ?? scenes.flatMap(\.windows).first
-    guard let layer = window?.rootViewController?.view.layer else {
-      return false
-    }
-    displayLayer.frame = layer.bounds
-    layer.insertSublayer(displayLayer, at: 0)
-    hostLayer = layer
-    return true
-  }
-
-  private func detachDisplayLayer() {
-    guard Thread.isMainThread else {
-      DispatchQueue.main.async { [weak self] in self?.detachDisplayLayer() }
-      return
-    }
-    displayLayer.flushAndRemoveImage()
-    displayLayer.removeFromSuperlayer()
-    hostLayer = nil
-  }
-
   private func startWhenReady() {
     dispatchPrecondition(condition: .onQueue(.main))
-    if let hostLayer {
-      displayLayer.frame = hostLayer.bounds
-    }
     guard startRequested, controller.isPictureInPicturePossible else { return }
     startRequested = false
     controller.startPictureInPicture()
@@ -204,7 +143,6 @@ final class PictureInPictureRenderer: NSObject,
     requestGeneration += 1
     startRequested = false
     setCaptureRequested(false)
-    detachDisplayLayer()
     stateCallback("failed", ["domain": domain, "code": code])
   }
 
@@ -232,7 +170,6 @@ final class PictureInPictureRenderer: NSObject,
     _ pictureInPictureController: AVPictureInPictureController
   ) {
     setCaptureRequested(false)
-    detachDisplayLayer()
     stateCallback("stopped", nil)
   }
 
@@ -242,6 +179,7 @@ final class PictureInPictureRenderer: NSObject,
   ) {
     var paused: Int32 = playing ? 0 : 1
     mpv_set_property(handle, "pause", MPV_FORMAT_FLAG, &paused)
+    controller.invalidatePlaybackState()
   }
 
   func pictureInPictureControllerIsPlaybackPaused(
@@ -258,7 +196,10 @@ final class PictureInPictureRenderer: NSObject,
     var duration = 0.0
     mpv_get_property(handle, "duration", MPV_FORMAT_DOUBLE, &duration)
     if duration.isFinite && duration > 0 {
-      return CMTimeRange(start: .zero, duration: CMTime(seconds: duration, preferredTimescale: 600))
+      return CMTimeRange(
+        start: .zero,
+        duration: CMTime(seconds: duration, preferredTimescale: 600)
+      )
     }
     return CMTimeRange(start: .negativeInfinity, duration: .positiveInfinity)
   }
@@ -274,6 +215,7 @@ final class PictureInPictureRenderer: NSObject,
       _ = mpv_command_string(handle, value)
     }
     completion()
+    controller.invalidatePlaybackState()
   }
 
   func pictureInPictureController(

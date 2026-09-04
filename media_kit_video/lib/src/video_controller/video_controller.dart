@@ -14,6 +14,32 @@ import 'package:media_kit_video/src/video_controller/android_video_controller/an
 import 'package:media_kit_video/src/video_controller/ohos_video_controller/ohos_video_controller.dart';
 import 'package:media_kit_video/src/video_controller/web_video_controller/web_video_controller.dart';
 
+/// Texture identity and dimensions published as one render-frame snapshot.
+///
+/// Native resize callbacks carry both values atomically. Keeping the same
+/// boundary in Dart prevents consumers from rebuilding with a new texture ID
+/// and stale dimensions (or the reverse) during output initialization.
+@immutable
+class VideoOutputState {
+  /// Texture ID registered by the platform implementation, or null before it
+  /// is available.
+  final int? id;
+
+  /// Native video dimensions, or null before the first resize callback.
+  final Rect? rect;
+
+  /// Creates an immutable native video-output snapshot.
+  const VideoOutputState({this.id, this.rect});
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is VideoOutputState && other.id == id && other.rect == rect;
+
+  @override
+  int get hashCode => Object.hash(id, rect);
+}
+
 /// {@template video_controller}
 ///
 /// VideoController
@@ -57,6 +83,10 @@ class VideoController {
   /// The [Player] instance associated with this [VideoController].
   final Player player;
 
+  /// Immutable output configuration used by both the native controller and
+  /// the rendering widget.
+  final VideoControllerConfiguration configuration;
+
   /// Platform specific internal implementation initialized depending upon the current platform.
   final platform = Completer<PlatformVideoController>();
 
@@ -69,6 +99,10 @@ class VideoController {
   /// [Rect] of the video output, received from the native implementation.
   final ValueNotifier<Rect?> rect = ValueNotifier<Rect?>(null);
 
+  /// Atomic texture ID and dimensions consumed by native texture widgets.
+  final ValueNotifier<VideoOutputState> output =
+      ValueNotifier<VideoOutputState>(const VideoOutputState());
+
   /// Current native picture-in-picture lifecycle state.
   final ValueNotifier<PictureInPictureState> pictureInPictureState =
       ValueNotifier<PictureInPictureState>(PictureInPictureState.stopped);
@@ -76,8 +110,7 @@ class VideoController {
   /// {@macro video_controller}
   VideoController(
     this.player, {
-    VideoControllerConfiguration configuration =
-        const VideoControllerConfiguration(),
+    this.configuration = const VideoControllerConfiguration(),
   }) {
     player.platform?.isVideoControllerAttached = true;
 
@@ -120,18 +153,42 @@ class VideoController {
           // Add listeners.
           void fn0() => id.value = controller.id.value;
           void fn1() => rect.value = controller.rect.value;
+          var outputUpdateScheduled = false;
+          var released = false;
+          void syncOutput() {
+            // Platform implementations may update rect and ID back-to-back for
+            // one resize callback. Publish after the current synchronous turn
+            // so widgets observe one coherent state and build only once.
+            if (outputUpdateScheduled) return;
+            outputUpdateScheduled = true;
+            scheduleMicrotask(() {
+              outputUpdateScheduled = false;
+              if (released) return;
+              output.value = VideoOutputState(
+                id: controller.id.value,
+                rect: controller.rect.value,
+              );
+            });
+          }
+
           void fn2() => pictureInPictureState.value =
               controller.pictureInPictureState.value;
           fn0();
           fn1();
+          syncOutput();
           fn2();
           controller.id.addListener(fn0);
           controller.rect.addListener(fn1);
+          controller.id.addListener(syncOutput);
+          controller.rect.addListener(syncOutput);
           controller.pictureInPictureState.addListener(fn2);
           // Remove listeners upon [Player.dispose].
           player.platform?.release.add(() async {
+            released = true;
             controller.id.removeListener(fn0);
             controller.rect.removeListener(fn1);
+            controller.id.removeListener(syncOutput);
+            controller.rect.removeListener(syncOutput);
             controller.pictureInPictureState.removeListener(fn2);
             pictureInPictureState.value = PictureInPictureState.stopped;
           });
