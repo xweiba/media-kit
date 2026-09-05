@@ -70,9 +70,14 @@ final class PictureInPictureRenderer: NSObject,
       ) == noErr,
       let description
     else { return }
+    var position = 0.0
+    mpv_get_property(handle, "time-pos", MPV_FORMAT_DOUBLE, &position)
+    let presentationTime = position.isFinite && position >= 0
+      ? CMTime(seconds: position, preferredTimescale: 600)
+      : .zero
     var timing = CMSampleTimingInfo(
       duration: .invalid,
-      presentationTimeStamp: CMClockGetTime(CMClockGetHostTimeClock()),
+      presentationTimeStamp: presentationTime,
       decodeTimeStamp: .invalid
     )
     var sample: CMSampleBuffer?
@@ -211,6 +216,7 @@ final class PictureInPictureRenderer: NSObject,
   func pictureInPictureControllerDidStartPictureInPicture(
     _ pictureInPictureController: AVPictureInPictureController
   ) {
+    pictureInPictureController.invalidatePlaybackState()
     stateCallback("active", nil)
   }
 
@@ -242,6 +248,7 @@ final class PictureInPictureRenderer: NSObject,
   ) {
     var paused: Int32 = playing ? 0 : 1
     mpv_set_property(handle, "pause", MPV_FORMAT_FLAG, &paused)
+    pictureInPictureController.invalidatePlaybackState()
   }
 
   func pictureInPictureControllerIsPlaybackPaused(
@@ -268,12 +275,31 @@ final class PictureInPictureRenderer: NSObject,
     skipByInterval skipInterval: CMTime,
     completion: @escaping () -> Void
   ) {
-    let seconds = CMTimeGetSeconds(skipInterval)
-    let command = "seek \(seconds) relative+exact"
-    command.withCString { value in
-      _ = mpv_command_string(handle, value)
+    var position = 0.0
+    var duration = 0.0
+    mpv_get_property(handle, "time-pos", MPV_FORMAT_DOUBLE, &position)
+    mpv_get_property(handle, "duration", MPV_FORMAT_DOUBLE, &duration)
+    let offset = CMTimeGetSeconds(skipInterval)
+    guard position.isFinite, offset.isFinite else {
+      completion()
+      return
     }
+    var target = max(0, position + offset)
+    if duration.isFinite && duration > 0 {
+      target = min(target, duration)
+    }
+    mpv_set_property(handle, "time-pos", MPV_FORMAT_DOUBLE, &target)
+    pictureInPictureController.invalidatePlaybackState()
     completion()
+  }
+
+  func pictureInPictureController(
+    _ pictureInPictureController: AVPictureInPictureController,
+    restoreUserInterfaceForPictureInPictureStopWithCompletionHandler completionHandler:
+      @escaping (Bool) -> Void
+  ) {
+    // Flutter 页面一直保留同一播放器，不需要系统先恢复一层原生全屏界面。
+    completionHandler(false)
   }
 
   func pictureInPictureController(
