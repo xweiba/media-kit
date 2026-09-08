@@ -144,13 +144,14 @@ class VideoState extends State<Video> with WidgetsBindingObserver {
   late int? _height = widget.controller.player.state.height;
   late bool _visible = (_width ?? 0) > 0 && (_height ?? 0) > 0;
   bool _pauseDueToPauseUponEnteringBackgroundMode = false;
+  bool _isFullscreen = false;
 
   ValueKey _key = const ValueKey(true);
 
   // Public API:
 
   bool isFullscreen() {
-    return media_kit_video_controls.isFullscreen(_contextNotifier.value!);
+    return _isFullscreen;
   }
 
   Future<void> enterFullscreen() {
@@ -243,6 +244,9 @@ class VideoState extends State<Video> with WidgetsBindingObserver {
 
   @override
   void didChangeDependencies() {
+    // Keep fullscreen identity independent of a context that may be
+    // deactivated while the route is being removed.
+    _isFullscreen = media_kit_video_controls.isFullscreen(context);
     videoViewParametersNotifier =
         media_kit_video_controls.VideoStateInheritedWidget.maybeOf(
               context,

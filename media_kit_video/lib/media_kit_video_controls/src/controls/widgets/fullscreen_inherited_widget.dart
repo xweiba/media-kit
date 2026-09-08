@@ -79,7 +79,12 @@ class _FullscreenInheritedWidgetPopScopeState
   }
 
   Future<void> _exitFullscreen() async {
-    await onExitFullscreen(context)?.call();
+    // Capture every inherited/context-bound dependency before the first await.
+    // A concurrent system back gesture may deactivate this route while the
+    // native exit callback or end-of-frame wait is pending.
+    final navigator = Navigator.of(context);
+    final exitNativeFullscreen = onExitFullscreen(context);
+    await exitNativeFullscreen?.call();
     if (!mounted) return;
 
     setState(() => _canPop = true);
@@ -87,7 +92,7 @@ class _FullscreenInheritedWidgetPopScopeState
     // 立即 maybePop 会再次被旧状态拦截，导致全屏路由永远无法退出。
     await WidgetsBinding.instance.endOfFrame;
     if (!mounted) return;
-    await Navigator.of(context).maybePop();
+    await navigator.maybePop();
   }
 
   @override

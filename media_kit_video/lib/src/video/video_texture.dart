@@ -146,12 +146,13 @@ class VideoState extends State<Video> with WidgetsBindingObserver {
   late int? _width = widget.controller.player.state.width;
   late int? _height = widget.controller.player.state.height;
   late bool _visible = (_width ?? 0) > 0 && (_height ?? 0) > 0;
+  bool _isFullscreen = false;
 
   bool _pauseDueToPauseUponEnteringBackgroundMode = false;
 
   // Public API:
   bool isFullscreen() {
-    return media_kit_video_controls.isFullscreen(_contextNotifier.value!);
+    return _isFullscreen;
   }
 
   Future<void> enterFullscreen() {
@@ -203,6 +204,10 @@ class VideoState extends State<Video> with WidgetsBindingObserver {
 
   @override
   void didChangeDependencies() {
+    // Cache while the element is active. Texture notifications can rebuild a
+    // fullscreen Video after its route has been deactivated but before dispose;
+    // an inherited lookup from that transient build is invalid in Flutter.
+    _isFullscreen = media_kit_video_controls.isFullscreen(context);
     videoViewParametersNotifier =
         media_kit_video_controls.VideoStateInheritedWidget.maybeOf(
               context,
@@ -380,57 +385,56 @@ class VideoState extends State<Video> with WidgetsBindingObserver {
               children: [
                 ClipRect(
                   child: FittedBox(
-                          fit: videoViewParameters.fit,
-                          alignment: videoViewParameters.alignment,
-                          // 纹理初始化会经历空值、1px 占位和真实尺寸三个阶段。保持固定
-                          // 根节点可避免平台辅助功能在子树反复卸载时引用已移除的节点。
-                          child: ExcludeSemantics(
-                            child: ValueListenableBuilder<VideoOutputState>(
-                              valueListenable: widget.controller.output,
-                              builder: (context, output, _) {
-                                final id = output.id;
-                                final rect = output.rect;
-                                final ready =
-                                    id != null && rect != null && _visible;
-                                final width = rect == null
-                                    ? 1.0
-                                    : videoViewParameters.aspectRatio == null
-                                        ? rect.width
-                                        : rect.height *
-                                            videoViewParameters.aspectRatio!;
-                                final height = rect?.height ?? 1.0;
-                                final hidden =
-                                    !ready || width <= 1.0 || height <= 1.0;
+                    fit: videoViewParameters.fit,
+                    alignment: videoViewParameters.alignment,
+                    // 纹理初始化会经历空值、1px 占位和真实尺寸三个阶段。保持固定
+                    // 根节点可避免平台辅助功能在子树反复卸载时引用已移除的节点。
+                    child: ExcludeSemantics(
+                      child: ValueListenableBuilder<VideoOutputState>(
+                        valueListenable: widget.controller.output,
+                        builder: (context, output, _) {
+                          final id = output.id;
+                          final rect = output.rect;
+                          final ready = id != null && rect != null && _visible;
+                          final width = rect == null
+                              ? 1.0
+                              : videoViewParameters.aspectRatio == null
+                                  ? rect.width
+                                  : rect.height *
+                                      videoViewParameters.aspectRatio!;
+                          final height = rect?.height ?? 1.0;
+                          final hidden =
+                              !ready || width <= 1.0 || height <= 1.0;
 
-                                return SizedBox(
-                                  width: width <= 0 ? 1.0 : width,
-                                  height: height <= 0 ? 1.0 : height,
-                                  child: Stack(
-                                    fit: StackFit.expand,
-                                    children: [
-                                      // 未注册的 0 号纹理只会绘制空帧。始终挂载同一个
-                                      // RenderTexture，真实 ID 到达时只更新属性，不插入
-                                      // 新 RenderObject。
-                                      Texture(
-                                        textureId: id ?? 0,
-                                        filterQuality:
-                                            videoViewParameters.filterQuality,
-                                      ),
-                                      // Linux 必须保留已挂载的 Texture；这里只用覆盖层
-                                      // 隐藏初始化占位纹理，不通过卸载来切换可见性。
-                                      ColoredBox(
-                                        color: hidden
-                                            ? videoViewParameters.fill
-                                            : videoViewParameters.fill
-                                                .withValues(alpha: 0),
-                                      ),
-                                    ],
-                                  ),
-                                );
-                              },
+                          return SizedBox(
+                            width: width <= 0 ? 1.0 : width,
+                            height: height <= 0 ? 1.0 : height,
+                            child: Stack(
+                              fit: StackFit.expand,
+                              children: [
+                                // 未注册的 0 号纹理只会绘制空帧。始终挂载同一个
+                                // RenderTexture，真实 ID 到达时只更新属性，不插入
+                                // 新 RenderObject。
+                                Texture(
+                                  textureId: id ?? 0,
+                                  filterQuality:
+                                      videoViewParameters.filterQuality,
+                                ),
+                                // Linux 必须保留已挂载的 Texture；这里只用覆盖层
+                                // 隐藏初始化占位纹理，不通过卸载来切换可见性。
+                                ColoredBox(
+                                  color: hidden
+                                      ? videoViewParameters.fill
+                                      : videoViewParameters.fill
+                                          .withValues(alpha: 0),
+                                ),
+                              ],
                             ),
-                          ),
-                        ),
+                          );
+                        },
+                      ),
+                    ),
+                  ),
                 ),
                 if (videoViewParameters.subtitleViewConfiguration.visible &&
                     !(widget.controller.player.platform?.configuration.libass ??
