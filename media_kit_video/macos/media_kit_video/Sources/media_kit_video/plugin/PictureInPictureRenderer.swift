@@ -13,13 +13,16 @@ final class PictureInPictureRenderer: NSObject,
   AVPictureInPictureSampleBufferPlaybackDelegate,
   AVPictureInPictureControllerDelegate
 {
-  private let handle: OpaquePointer
+  private var handle: OpaquePointer?
+  private let handleLock = NSLock()
   private let stateCallback: (String, [String: Any]?) -> Void
   private let displayLayer = AVSampleBufferDisplayLayer()
   private let captureLock = NSLock()
   private var captureRequested = false
   private var startRequested = false
   private var requestGeneration = 0
+  private var cachedDuration = 0.0
+  private var cachedPaused = false
   private lazy var controller: AVPictureInPictureController = {
     let source = AVPictureInPictureController.ContentSource(
       sampleBufferDisplayLayer: displayLayer,
@@ -39,6 +42,24 @@ final class PictureInPictureRenderer: NSObject,
     self.stateCallback = stateCallback
     super.init()
     displayLayer.videoGravity = .resizeAspect
+  }
+
+  /// VideoOutput must invalidate the renderer before releasing the mpv core.
+  /// AVKit may deliver delegate callbacks after disposal, so those callbacks
+  /// fall back to the cached state instead of dereferencing a stale handle.
+  func invalidate() {
+    dispatchPrecondition(condition: .onQueue(.main))
+    requestGeneration += 1
+    startRequested = false
+    setCaptureRequested(false)
+    if controller.isPictureInPictureActive {
+      controller.stopPictureInPicture()
+    }
+    controller.delegate = nil
+    handleLock.lock()
+    handle = nil
+    handleLock.unlock()
+    displayLayer.flushAndRemoveImage()
   }
 
   /// 仅在准备或显示 PiP 时复制 mpv 像素帧，避免普通播放长期承担额外内存带宽。
@@ -177,24 +198,40 @@ final class PictureInPictureRenderer: NSObject,
     _ pictureInPictureController: AVPictureInPictureController,
     setPlaying playing: Bool
   ) {
-    var paused: Int32 = playing ? 0 : 1
-    mpv_set_property(handle, "pause", MPV_FORMAT_FLAG, &paused)
+    handleLock.lock()
+    cachedPaused = !playing
+    if let handle {
+      var paused: Int32 = playing ? 0 : 1
+      mpv_set_property(handle, "pause", MPV_FORMAT_FLAG, &paused)
+    }
+    handleLock.unlock()
     controller.invalidatePlaybackState()
   }
 
   func pictureInPictureControllerIsPlaybackPaused(
     _ pictureInPictureController: AVPictureInPictureController
   ) -> Bool {
-    var paused: Int32 = 0
+    handleLock.lock()
+    defer { handleLock.unlock() }
+    guard let handle else { return cachedPaused }
+    var paused: Int32 = cachedPaused ? 1 : 0
     mpv_get_property(handle, "pause", MPV_FORMAT_FLAG, &paused)
-    return paused != 0
+    cachedPaused = paused != 0
+    return cachedPaused
   }
 
   func pictureInPictureControllerTimeRangeForPlayback(
     _ pictureInPictureController: AVPictureInPictureController
   ) -> CMTimeRange {
-    var duration = 0.0
-    mpv_get_property(handle, "duration", MPV_FORMAT_DOUBLE, &duration)
+    handleLock.lock()
+    var duration = cachedDuration
+    if let handle {
+      mpv_get_property(handle, "duration", MPV_FORMAT_DOUBLE, &duration)
+      if duration.isFinite && duration > 0 {
+        cachedDuration = duration
+      }
+    }
+    handleLock.unlock()
     if duration.isFinite && duration > 0 {
       return CMTimeRange(
         start: .zero,
@@ -211,9 +248,13 @@ final class PictureInPictureRenderer: NSObject,
   ) {
     let seconds = CMTimeGetSeconds(skipInterval)
     let command = "seek \(seconds) relative+exact"
-    command.withCString { value in
-      _ = mpv_command_string(handle, value)
+    handleLock.lock()
+    if let handle {
+      command.withCString { value in
+        _ = mpv_command_string(handle, value)
+      }
     }
+    handleLock.unlock()
     completion()
     controller.invalidatePlaybackState()
   }
