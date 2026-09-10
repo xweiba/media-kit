@@ -80,6 +80,13 @@ abstract class PlatformVideoController {
   /// Requests native picture-in-picture when supported by this implementation.
   Future<bool> enterPictureInPicture() async => false;
 
+  /// Prepares native picture-in-picture without presenting it immediately.
+  ///
+  /// On platforms that support automatic picture-in-picture from inline
+  /// playback, this keeps the current video output ready for a later app
+  /// background transition.
+  Future<bool> preparePictureInPicture() async => false;
+
   /// Requests dismissal of native picture-in-picture when currently active.
   Future<bool> exitPictureInPicture() async => false;
 

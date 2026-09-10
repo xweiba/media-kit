@@ -72,6 +72,8 @@ public class MediaKitVideoPlugin: NSObject, FlutterPlugin {
       handleDisposeMethodCall(call.arguments, result)
     case "VideoOutputManager.EnterPictureInPicture":
       handleEnterPictureInPictureMethodCall(call.arguments, result)
+    case "VideoOutputManager.PreparePictureInPicture":
+      handlePreparePictureInPictureMethodCall(call.arguments, result)
     case "VideoOutputManager.ExitPictureInPicture":
       handleExitPictureInPictureMethodCall(call.arguments, result)
     case "Utils.EnterNativeFullscreen":
@@ -93,6 +95,18 @@ public class MediaKitVideoPlugin: NSObject, FlutterPlugin {
       return result(false)
     }
     result(videoOutputManager.enterPictureInPicture(handle: handle))
+  }
+
+  private func handlePreparePictureInPictureMethodCall(
+    _ arguments: Any?,
+    _ result: FlutterResult
+  ) {
+    let args = arguments as? [String: Any]
+    let handle = Int64(args?["handle"] as? String ?? "")
+    guard let handle else {
+      return result(false)
+    }
+    result(videoOutputManager.preparePictureInPicture(handle: handle))
   }
 
   private func handleExitPictureInPictureMethodCall(

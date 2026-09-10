@@ -234,6 +234,12 @@ class VideoController {
     return instance.enterPictureInPicture();
   }
 
+  /// Prepares native picture-in-picture without presenting it immediately.
+  Future<bool> preparePictureInPicture() async {
+    final instance = await platform.future;
+    return instance.preparePictureInPicture();
+  }
+
   /// Dismisses native picture-in-picture when supported by the platform.
   Future<bool> exitPictureInPicture() async {
     final instance = await platform.future;

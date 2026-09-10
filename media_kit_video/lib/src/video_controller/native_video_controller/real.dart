@@ -84,6 +84,18 @@ class NativeVideoController extends PlatformVideoController {
         false;
   }
 
+  /// Prepares iOS system picture-in-picture without presenting it yet.
+  @override
+  Future<bool> preparePictureInPicture() async {
+    if (!Platform.isIOS) return false;
+    final handle = await player.handle;
+    return await _channel.invokeMethod<bool>(
+          'VideoOutputManager.PreparePictureInPicture',
+          {'handle': handle.toString()},
+        ) ??
+        false;
+  }
+
   /// Dismisses iOS system picture-in-picture for the current native output.
   @override
   Future<bool> exitPictureInPicture() async {

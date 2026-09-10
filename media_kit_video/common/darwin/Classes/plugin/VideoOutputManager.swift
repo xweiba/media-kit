@@ -75,6 +75,10 @@ public class VideoOutputManager: NSObject {
     videoOutputs[handle]?.enterPictureInPicture() ?? false
   }
 
+  public func preparePictureInPicture(handle: Int64) -> Bool {
+    videoOutputs[handle]?.preparePictureInPicture() ?? false
+  }
+
   public func exitPictureInPicture(handle: Int64) -> Bool {
     videoOutputs[handle]?.exitPictureInPicture() ?? false
   }

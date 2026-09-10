@@ -95,6 +95,18 @@ public class VideoOutput: NSObject {
       return
     }
     disposalStarted = true
+    #if os(iOS) || os(macOS)
+      if #available(iOS 15.0, macOS 12.0, *),
+        let renderer = pictureInPictureRenderer as? PictureInPictureRenderer
+      {
+        let invalidate = { renderer.invalidate() }
+        if Thread.isMainThread {
+          invalidate()
+        } else {
+          DispatchQueue.main.sync(execute: invalidate)
+        }
+      }
+    #endif
     worker.enqueue { [self] in
       disposed = true
       // Flutter 纹理注册表可能继续持有 texture 到 raster 线程下一次
@@ -234,6 +246,17 @@ public class VideoOutput: NSObject {
         let renderer = pictureInPictureRenderer as? PictureInPictureRenderer
       {
         return renderer.start()
+      }
+    #endif
+    return false
+  }
+
+  public func preparePictureInPicture() -> Bool {
+    #if os(iOS)
+      if #available(iOS 15.0, *),
+        let renderer = pictureInPictureRenderer as? PictureInPictureRenderer
+      {
+        return renderer.prepare()
       }
     #endif
     return false
