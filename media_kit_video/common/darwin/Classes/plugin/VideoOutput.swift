@@ -69,7 +69,10 @@ public class VideoOutput: NSObject {
       if #available(iOS 15.0, macOS 12.0, *) {
         pictureInPictureRenderer = PictureInPictureRenderer(
           handle: self.handle,
-          stateCallback: pictureInPictureStateCallback
+          stateCallback: pictureInPictureStateCallback,
+          presentationOwnershipCallback: { [weak self] owned in
+            if !owned { self?.notifyRetainedTextureFrame() }
+          }
         )
       }
     #endif
@@ -224,19 +227,44 @@ public class VideoOutput: NSObject {
     guard texture.render(size) else {
       return
     }
+    var pictureInPictureOwnsPresentation = false
     #if os(iOS) || os(macOS)
       if #available(iOS 15.0, macOS 12.0, *),
-        let renderer = pictureInPictureRenderer as? PictureInPictureRenderer,
-        renderer.shouldCaptureFrame,
-        let pixelBuffer = texture.copyPixelBuffer()?.takeRetainedValue()
+        let renderer = pictureInPictureRenderer as? PictureInPictureRenderer
       {
-        renderer.enqueue(pixelBuffer)
+        pictureInPictureOwnsPresentation = renderer.ownsPresentation
+        if renderer.shouldCaptureFrame,
+          let pixelBuffer = texture.copyPixelBuffer()?.takeRetainedValue()
+        {
+          renderer.enqueue(pixelBuffer)
+        }
       }
     #endif
-    DispatchQueue.main.sync { [weak self] in
-      guard let that = self else { return }
+    if pictureInPictureOwnsPresentation { return }
+    notifyRetainedTextureFrame()
+  }
+
+  private func notifyRetainedTextureFrame() {
+    let notify = { [weak self] in
+      guard let that = self, !that.disposed, that.textureId >= 0 else { return }
       // Textures must be marked as available from the main thread
       that.registry.textureFrameAvailable(that.textureId)
+    }
+    if Thread.isMainThread {
+      notify()
+    } else {
+      DispatchQueue.main.sync(execute: notify)
+    }
+  }
+
+  @available(iOS 15.0, macOS 12.0, *)
+  private func primePictureInPictureFrame(_ renderer: PictureInPictureRenderer) {
+    worker.enqueue { [weak self, weak renderer] in
+      guard let self, let renderer, let texture = self.texture,
+        renderer.shouldCaptureFrame,
+        let pixelBuffer = texture.copyPixelBuffer()?.takeRetainedValue()
+      else { return }
+      renderer.enqueue(pixelBuffer)
     }
   }
 
@@ -245,7 +273,9 @@ public class VideoOutput: NSObject {
       if #available(iOS 15.0, macOS 12.0, *),
         let renderer = pictureInPictureRenderer as? PictureInPictureRenderer
       {
-        return renderer.start()
+        let accepted = renderer.start()
+        if accepted { primePictureInPictureFrame(renderer) }
+        return accepted
       }
     #endif
     return false
@@ -256,7 +286,9 @@ public class VideoOutput: NSObject {
       if #available(iOS 15.0, *),
         let renderer = pictureInPictureRenderer as? PictureInPictureRenderer
       {
-        return renderer.prepare()
+        let accepted = renderer.prepare()
+        if accepted { primePictureInPictureFrame(renderer) }
+        return accepted
       }
     #endif
     return false

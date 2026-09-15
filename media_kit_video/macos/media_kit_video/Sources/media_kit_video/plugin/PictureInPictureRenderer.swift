@@ -16,13 +16,17 @@ final class PictureInPictureRenderer: NSObject,
   private var handle: OpaquePointer?
   private let handleLock = NSLock()
   private let stateCallback: (String, [String: Any]?) -> Void
+  private let presentationOwnershipCallback: (Bool) -> Void
   private let displayLayer = AVSampleBufferDisplayLayer()
   private let captureLock = NSLock()
+  private var pictureInPicturePossibleObservation: NSKeyValueObservation?
   private var captureRequested = false
   private var startRequested = false
   private var requestGeneration = 0
   private var cachedDuration = 0.0
   private var cachedPaused = false
+  private var presentationOwned = false
+  private var cachedFormatDescription: CMVideoFormatDescription?
   private lazy var controller: AVPictureInPictureController = {
     let source = AVPictureInPictureController.ContentSource(
       sampleBufferDisplayLayer: displayLayer,
@@ -36,10 +40,12 @@ final class PictureInPictureRenderer: NSObject,
 
   init(
     handle: OpaquePointer,
-    stateCallback: @escaping (String, [String: Any]?) -> Void
+    stateCallback: @escaping (String, [String: Any]?) -> Void,
+    presentationOwnershipCallback: @escaping (Bool) -> Void
   ) {
     self.handle = handle
     self.stateCallback = stateCallback
+    self.presentationOwnershipCallback = presentationOwnershipCallback
     super.init()
     displayLayer.videoGravity = .resizeAspect
   }
@@ -52,6 +58,8 @@ final class PictureInPictureRenderer: NSObject,
     requestGeneration += 1
     startRequested = false
     setCaptureRequested(false)
+    pictureInPicturePossibleObservation?.invalidate()
+    pictureInPicturePossibleObservation = nil
     if controller.isPictureInPictureActive {
       controller.stopPictureInPicture()
     }
@@ -69,17 +77,16 @@ final class PictureInPictureRenderer: NSObject,
     return captureRequested
   }
 
+  /// 系统 PiP 活跃时由 display layer 独占呈现，Flutter 无需同步合成同一帧。
+  var ownsPresentation: Bool {
+    captureLock.lock()
+    defer { captureLock.unlock() }
+    return presentationOwned
+  }
+
   func enqueue(_ pixelBuffer: CVPixelBuffer) {
     guard shouldCaptureFrame else { return }
-    var description: CMVideoFormatDescription?
-    guard
-      CMVideoFormatDescriptionCreateForImageBuffer(
-        allocator: kCFAllocatorDefault,
-        imageBuffer: pixelBuffer,
-        formatDescriptionOut: &description
-      ) == noErr,
-      let description
-    else { return }
+    guard let description = formatDescription(for: pixelBuffer) else { return }
     var timing = CMSampleTimingInfo(
       duration: .invalid,
       presentationTimeStamp: CMClockGetTime(CMClockGetHostTimeClock()),
@@ -102,9 +109,6 @@ final class PictureInPictureRenderer: NSObject,
     if displayLayer.isReadyForMoreMediaData {
       displayLayer.enqueue(sample)
     }
-    DispatchQueue.main.async { [weak self] in
-      self?.startWhenReady()
-    }
   }
 
   func start() -> Bool {
@@ -120,7 +124,9 @@ final class PictureInPictureRenderer: NSObject,
     let generation = requestGeneration
     startRequested = true
     setCaptureRequested(true)
+    observePictureInPicturePossibility()
     stateCallback("starting", nil)
+    startWhenReady()
     // ContentSource 收到首个 sample 后才可能启动；超时必须撤销帧复制，
     // 避免系统拒绝 PiP 后继续承担无意义的内存带宽。
     DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
@@ -154,10 +160,58 @@ final class PictureInPictureRenderer: NSObject,
     controller.startPictureInPicture()
   }
 
+  private func observePictureInPicturePossibility() {
+    guard pictureInPicturePossibleObservation == nil else { return }
+    pictureInPicturePossibleObservation = controller.observe(
+      \.isPictureInPicturePossible,
+      options: [.initial, .new]
+    ) { [weak self] _, change in
+      guard change.newValue == true else { return }
+      let start: () -> Void = { [weak self] in self?.startWhenReady() }
+      if Thread.isMainThread {
+        start()
+      } else {
+        DispatchQueue.main.async(execute: start)
+      }
+    }
+  }
+
+  private func formatDescription(
+    for pixelBuffer: CVPixelBuffer
+  ) -> CMVideoFormatDescription? {
+    if let cachedFormatDescription,
+      CMVideoFormatDescriptionMatchesImageBuffer(
+        cachedFormatDescription,
+        imageBuffer: pixelBuffer
+      )
+    {
+      return cachedFormatDescription
+    }
+    var description: CMVideoFormatDescription?
+    guard
+      CMVideoFormatDescriptionCreateForImageBuffer(
+        allocator: kCFAllocatorDefault,
+        imageBuffer: pixelBuffer,
+        formatDescriptionOut: &description
+      ) == noErr,
+      let description
+    else { return nil }
+    cachedFormatDescription = description
+    return description
+  }
+
   private func setCaptureRequested(_ value: Bool) {
     captureLock.lock()
     captureRequested = value
     captureLock.unlock()
+  }
+
+  private func setPresentationOwned(_ value: Bool) {
+    captureLock.lock()
+    let changed = presentationOwned != value
+    presentationOwned = value
+    captureLock.unlock()
+    if changed { presentationOwnershipCallback(value) }
   }
 
   private func reportFailure(domain: String, code: Int) {
@@ -170,6 +224,7 @@ final class PictureInPictureRenderer: NSObject,
   func pictureInPictureControllerDidStartPictureInPicture(
     _ pictureInPictureController: AVPictureInPictureController
   ) {
+    setPresentationOwned(true)
     stateCallback("active", nil)
   }
 
@@ -191,6 +246,7 @@ final class PictureInPictureRenderer: NSObject,
     _ pictureInPictureController: AVPictureInPictureController
   ) {
     setCaptureRequested(false)
+    setPresentationOwned(false)
     stateCallback("stopped", nil)
   }
 
