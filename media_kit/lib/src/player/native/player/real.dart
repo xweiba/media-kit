@@ -2125,7 +2125,7 @@ class NativePlayer extends PlatformPlayer {
               errorController.add(text);
             }
           }
-          if (prefix == 'cplayer') {
+          if (prefix == 'cplayer' && !isCacheDumpFailure(text)) {
             if (!errorController.isClosed) {
               errorController.add(text);
             }
@@ -2730,6 +2730,12 @@ class NativePlayer extends PlatformPlayer {
   @visibleForTesting
   static bool test = false;
 }
+
+/// Cache export failure is diagnostic output, not failure to play the source.
+/// Keep the match exact so unrelated cplayer errors retain their error events.
+@visibleForTesting
+bool isCacheDumpFailure(String text) =>
+    text == 'Cache dumping stopped due to error.';
 
 // --------------------------------------------------
 // Performance sensitive methods in [Player] are executed in an [Isolate].

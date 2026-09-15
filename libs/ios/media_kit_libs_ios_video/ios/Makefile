@@ -1,7 +1,7 @@
 all: Frameworks/*.xcframework Frameworks/.symlinks
 
-MPV_XCFRAMEWORKS_VERSION=0.6.8-mediaio.2
-MPV_XCFRAMEWORKS_SHA256SUM=68e79c73e95cdec895975b3404df66b0bf2dfa2973bc5698116acb36a0d5ee50
+MPV_XCFRAMEWORKS_VERSION=0.6.8-mediaio.3
+MPV_XCFRAMEWORKS_SHA256SUM=376dda4b473881e959b5edeb9a6640104d2a0e839aab13aaccb9b12598ed3bda
 MPV_XCFRAMEWORKS_RELEASE=https://github.com/xweiba/libmpv-darwin-build/releases/download/${MPV_XCFRAMEWORKS_VERSION}
 
 TAR=tar
