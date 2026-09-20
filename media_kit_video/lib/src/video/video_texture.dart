@@ -18,6 +18,21 @@ import 'package:media_kit_video/src/utils/wakelock.dart';
 import 'package:media_kit_video/src/video_view_parameters.dart';
 import 'package:media_kit_video/src/video_controller/video_controller.dart';
 
+/// Whether a native texture snapshot contains a presentable video frame.
+///
+/// [VideoOutputState] retains the latest atomic ID and dimensions, so it also
+/// covers controllers that became ready before the [Video] widget mounted.
+@visibleForTesting
+bool isVideoOutputReady(VideoOutputState output) {
+  final rect = output.rect;
+  return output.id != null &&
+      rect != null &&
+      rect.width.isFinite &&
+      rect.height.isFinite &&
+      rect.width > 1.0 &&
+      rect.height > 1.0;
+}
+
 /// {@template video}
 ///
 /// Video
@@ -143,9 +158,6 @@ class VideoState extends State<Video> with WidgetsBindingObserver {
   final _subtitleViewKey = GlobalKey<SubtitleViewState>();
   final _wakelock = Wakelock();
   final _subscriptions = <StreamSubscription>[];
-  late int? _width = widget.controller.player.state.width;
-  late int? _height = widget.controller.player.state.height;
-  late bool _visible = (_width ?? 0) > 0 && (_height ?? 0) > 0;
   bool _isFullscreen = false;
 
   bool _pauseDueToPauseUponEnteringBackgroundMode = false;
@@ -300,36 +312,6 @@ class VideoState extends State<Video> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    // --------------------------------------------------
-    // Do not show the video frame until width & height are available.
-    // Since [ValueNotifier<Rect?>] inside [VideoController] only gets updated by the render loop (i.e. it will not fire when video's width & height are not available etc.), it's important to handle this separately here.
-    _subscriptions.addAll(
-      [
-        widget.controller.player.stream.width.listen(
-          (value) {
-            _width = value;
-            final visible = (_width ?? 0) > 0 && (_height ?? 0) > 0;
-            if (_visible != visible) {
-              setState(() {
-                _visible = visible;
-              });
-            }
-          },
-        ),
-        widget.controller.player.stream.height.listen(
-          (value) {
-            _height = value;
-            final visible = (_width ?? 0) > 0 && (_height ?? 0) > 0;
-            if (_visible != visible) {
-              setState(() {
-                _visible = visible;
-              });
-            }
-          },
-        ),
-      ],
-    );
-    // --------------------------------------------------
     if (widget.wakelock) {
       if (widget.controller.player.state.playing) {
         _wakelock.enable();
@@ -395,7 +377,6 @@ class VideoState extends State<Video> with WidgetsBindingObserver {
                         builder: (context, output, _) {
                           final id = output.id;
                           final rect = output.rect;
-                          final ready = id != null && rect != null && _visible;
                           final width = rect == null
                               ? 1.0
                               : videoViewParameters.aspectRatio == null
@@ -403,8 +384,7 @@ class VideoState extends State<Video> with WidgetsBindingObserver {
                                   : rect.height *
                                       videoViewParameters.aspectRatio!;
                           final height = rect?.height ?? 1.0;
-                          final hidden =
-                              !ready || width <= 1.0 || height <= 1.0;
+                          final hidden = !isVideoOutputReady(output);
 
                           return SizedBox(
                             width: width <= 0 ? 1.0 : width,
