@@ -107,6 +107,17 @@ class VideoController {
   final ValueNotifier<PictureInPictureState> pictureInPictureState =
       ValueNotifier<PictureInPictureState>(PictureInPictureState.stopped);
 
+  final StreamController<PictureInPictureSeekEvent>
+      _pictureInPictureSeekEvents =
+      StreamController<PictureInPictureSeekEvent>.broadcast(sync: true);
+
+  /// Seeks performed by platform picture-in-picture controls.
+  ///
+  /// The decoder has already been instructed to seek when these events are
+  /// observed; listeners must not repeat the decoder operation.
+  Stream<PictureInPictureSeekEvent> get pictureInPictureSeekEvents =>
+      _pictureInPictureSeekEvents.stream;
+
   /// {@macro video_controller}
   VideoController(
     this.player, {
@@ -173,6 +184,12 @@ class VideoController {
 
           void fn2() => pictureInPictureState.value =
               controller.pictureInPictureState.value;
+          final pictureInPictureSeekSubscription =
+              controller.pictureInPictureSeekEvents.listen((event) {
+            if (!released && !_pictureInPictureSeekEvents.isClosed) {
+              _pictureInPictureSeekEvents.add(event);
+            }
+          });
           fn0();
           fn1();
           syncOutput();
@@ -190,7 +207,9 @@ class VideoController {
             controller.id.removeListener(syncOutput);
             controller.rect.removeListener(syncOutput);
             controller.pictureInPictureState.removeListener(fn2);
+            await pictureInPictureSeekSubscription.cancel();
             pictureInPictureState.value = PictureInPictureState.stopped;
+            await _pictureInPictureSeekEvents.close();
           });
         } else {
           platform.completeError(

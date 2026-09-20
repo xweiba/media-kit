@@ -34,6 +34,7 @@ public class VideoOutput: NSObject {
   private let textureUpdateCallback: TextureUpdateCallback
   private let pictureInPictureStateCallback: PictureInPictureStateCallback
   private let worker: Worker = .init()
+  private let renderSerial = PictureInPictureRenderSerial()
   private var width: Int64?
   private var height: Int64?
   private var texture: ResizableTextureProtocol!
@@ -72,6 +73,12 @@ public class VideoOutput: NSObject {
           stateCallback: pictureInPictureStateCallback,
           presentationOwnershipCallback: { [weak self] owned in
             if !owned { self?.notifyRetainedTextureFrame() }
+          },
+          renderBoundaryCallback: { [weak self] in
+            self?.renderSerial.current ?? UInt64.max
+          },
+          postDiscontinuityFrameCallback: { [weak self] in
+            self?.refreshPictureInPictureFrame()
           }
         )
       }
@@ -224,19 +231,36 @@ public class VideoOutput: NSObject {
       return
     }
 
+    var captureGeneration: UInt64?
+    #if os(iOS) || os(macOS)
+      if #available(iOS 15.0, macOS 12.0, *),
+        let renderer = pictureInPictureRenderer as? PictureInPictureRenderer,
+        renderer.shouldCaptureFrame
+      {
+        captureGeneration = renderer.captureGeneration
+      }
+    #endif
+
     guard texture.render(size) else {
       return
     }
+    let completedRenderSerial = renderSerial.completeRender()
     var pictureInPictureOwnsPresentation = false
     #if os(iOS) || os(macOS)
       if #available(iOS 15.0, macOS 12.0, *),
         let renderer = pictureInPictureRenderer as? PictureInPictureRenderer
       {
         pictureInPictureOwnsPresentation = renderer.ownsPresentation
-        if renderer.shouldCaptureFrame,
-          let pixelBuffer = texture.copyPixelBuffer()?.takeRetainedValue()
+        if let captureGeneration,
+          renderer.shouldCaptureFrame
         {
-          renderer.enqueue(pixelBuffer)
+          if let pixelBuffer = texture.copyPixelBuffer()?.takeRetainedValue() {
+            renderer.enqueue(
+              pixelBuffer,
+              generation: captureGeneration,
+              renderSerial: completedRenderSerial
+            )
+          }
         }
       }
     #endif
@@ -261,11 +285,28 @@ public class VideoOutput: NSObject {
   private func primePictureInPictureFrame(_ renderer: PictureInPictureRenderer) {
     worker.enqueue { [weak self, weak renderer] in
       guard let self, let renderer, let texture = self.texture,
-        renderer.shouldCaptureFrame,
-        let pixelBuffer = texture.copyPixelBuffer()?.takeRetainedValue()
+        renderer.shouldCaptureFrame
       else { return }
-      renderer.enqueue(pixelBuffer)
+      let generation = renderer.captureGeneration
+      if let pixelBuffer = texture.copyPixelBuffer()?.takeRetainedValue() {
+        renderer.enqueue(
+          pixelBuffer,
+          generation: generation,
+          renderSerial: renderSerial.current
+        )
+      }
     }
+  }
+
+  private func refreshPictureInPictureFrame() {
+    #if os(iOS) || os(macOS)
+      if #available(iOS 15.0, macOS 12.0, *),
+        let renderer = pictureInPictureRenderer as? PictureInPictureRenderer,
+        renderer.shouldCaptureFrame
+      {
+        primePictureInPictureFrame(renderer)
+      }
+    #endif
   }
 
   public func enterPictureInPicture() -> Bool {

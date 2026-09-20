@@ -28,6 +28,35 @@ enum PictureInPictureState {
   failed,
 }
 
+/// A seek performed by platform picture-in-picture controls.
+///
+/// Both positions are non-negative points on the media timeline. The platform
+/// performs the decoder seek; consumers use this event to synchronize related
+/// state without issuing a second seek.
+@immutable
+class PictureInPictureSeekEvent {
+  const PictureInPictureSeekEvent({
+    required this.origin,
+    required this.target,
+  });
+
+  /// Decoder position used by the platform to calculate the seek.
+  final Duration origin;
+
+  /// Absolute decoder position requested by the platform control.
+  final Duration target;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PictureInPictureSeekEvent &&
+          other.origin == origin &&
+          other.target == target;
+
+  @override
+  int get hashCode => Object.hash(origin, target);
+}
+
 /// {@template platform_video_controller}
 ///
 /// PlatformVideoController
@@ -55,6 +84,22 @@ abstract class PlatformVideoController {
   /// Current native picture-in-picture lifecycle state.
   final ValueNotifier<PictureInPictureState> pictureInPictureState =
       ValueNotifier<PictureInPictureState>(PictureInPictureState.stopped);
+
+  final StreamController<PictureInPictureSeekEvent>
+      _pictureInPictureSeekEvents =
+      StreamController<PictureInPictureSeekEvent>.broadcast(sync: true);
+
+  /// Seeks initiated by native picture-in-picture controls.
+  Stream<PictureInPictureSeekEvent> get pictureInPictureSeekEvents =>
+      _pictureInPictureSeekEvents.stream;
+
+  /// Publishes a validated native picture-in-picture seek.
+  @protected
+  void publishPictureInPictureSeek(PictureInPictureSeekEvent event) {
+    if (!_pictureInPictureSeekEvents.isClosed) {
+      _pictureInPictureSeekEvents.add(event);
+    }
+  }
 
   /// {@macro platform_video_controller}
   PlatformVideoController(
@@ -99,6 +144,7 @@ abstract class PlatformVideoController {
     id.dispose();
     rect.dispose();
     pictureInPictureState.dispose();
+    unawaited(_pictureInPictureSeekEvents.close());
   }
 }
 

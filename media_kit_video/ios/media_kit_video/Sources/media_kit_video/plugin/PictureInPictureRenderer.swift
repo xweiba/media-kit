@@ -18,19 +18,49 @@ final class PictureInPictureRenderer: NSObject,
   private let handleLock = NSLock()
   private let stateCallback: (String, [String: Any]?) -> Void
   private let presentationOwnershipCallback: (Bool) -> Void
+  private let renderBoundaryCallback: () -> UInt64
+  private let postDiscontinuityFrameCallback: () -> Void
   private let displayLayer = AVSampleBufferDisplayLayer()
   private let captureLock = NSLock()
+  private let presentationLock = NSLock()
+  private let mediaDataQueue = DispatchQueue(
+    label: "com.alexmercerind.media_kit_video.pip.samples"
+  )
   private var playbackTimebase: CMTimebase?
+  private var stateObserver: PictureInPictureStateObserver?
+  private var stateObserverEpoch: UInt64 = 0
+  private var timingPolicy = PictureInPictureTimingPolicy()
   private var pictureInPicturePossibleObservation: NSKeyValueObservation?
   private weak var hostLayer: CALayer?
   private var captureRequested = false
+  private let frameGate = PictureInPictureFrameGate()
+  private var renderBoundary = PictureInPictureRenderBoundary()
+  private var nativeSeek = PictureInPictureNativeSeekTracker()
+  private var awaitingRestartReplay = false
+  private var pendingSample: PendingSample?
+  private var readinessRequestActive = false
   private var startRequested = false
   private var requestGeneration = 0
   private var cachedPosition = 0.0
   private var cachedDuration = 0.0
   private var cachedPaused = false
+  private var cachedBuffering = false
+  private var cachedCoreIdle = false
+  private var cachedSeeking = false
+  private var cachedSpeed = 1.0
   private var presentationOwned = false
   private var cachedFormatDescription: CMVideoFormatDescription?
+  private struct PendingSample {
+    let sample: CMSampleBuffer
+    let snapshot: PictureInPictureTimingPolicy.Snapshot
+    let generation: UInt64
+    let renderSerial: UInt64
+  }
+  private struct PresentedFrame {
+    let position: Double
+    let renderSerial: UInt64
+  }
+  private var lastPresentedFrame: PresentedFrame?
   private lazy var controller: AVPictureInPictureController = {
     let source = AVPictureInPictureController.ContentSource(
       sampleBufferDisplayLayer: displayLayer,
@@ -46,17 +76,23 @@ final class PictureInPictureRenderer: NSObject,
   init(
     handle: OpaquePointer,
     stateCallback: @escaping (String, [String: Any]?) -> Void,
-    presentationOwnershipCallback: @escaping (Bool) -> Void
+    presentationOwnershipCallback: @escaping (Bool) -> Void,
+    renderBoundaryCallback: @escaping () -> UInt64,
+    postDiscontinuityFrameCallback: @escaping () -> Void
   ) {
     self.handle = handle
     self.stateCallback = stateCallback
     self.presentationOwnershipCallback = presentationOwnershipCallback
+    self.renderBoundaryCallback = renderBoundaryCallback
+    self.postDiscontinuityFrameCallback = postDiscontinuityFrameCallback
     super.init()
     displayLayer.videoGravity = .resizeAspect
     configurePlaybackTimebase()
   }
 
   deinit {
+    stateObserver?.cancel()
+    displayLayer.stopRequestingMediaData()
     pictureInPicturePossibleObservation?.invalidate()
     if Thread.isMainThread {
       displayLayer.removeFromSuperlayer()
@@ -74,6 +110,7 @@ final class PictureInPictureRenderer: NSObject,
     requestGeneration += 1
     startRequested = false
     setCaptureRequested(false)
+    stopStateObserver()
     pictureInPicturePossibleObservation?.invalidate()
     pictureInPicturePossibleObservation = nil
     if controller.isPictureInPictureActive {
@@ -101,13 +138,21 @@ final class PictureInPictureRenderer: NSObject,
     return presentationOwned
   }
 
-  func enqueue(_ pixelBuffer: CVPixelBuffer) {
+  /// Token captured before copying a pixel buffer. Discontinuities invalidate
+  /// in-flight copies before they can reach the sample queue.
+  var captureGeneration: UInt64 {
+    frameGate.token
+  }
+
+  func enqueue(
+    _ pixelBuffer: CVPixelBuffer,
+    generation: UInt64,
+    renderSerial: UInt64
+  ) {
     guard shouldCaptureFrame else { return }
     guard let description = formatDescription(for: pixelBuffer) else { return }
-    let position = readPlaybackPosition()
-    let presentationTime = position.isFinite && position >= 0
-      ? CMTime(seconds: position, preferredTimescale: 600)
-      : .zero
+    let snapshot = readFrameSnapshot()
+    let presentationTime = CMTime(seconds: snapshot.position, preferredTimescale: 600)
     var timing = CMSampleTimingInfo(
       duration: .invalid,
       presentationTimeStamp: presentationTime,
@@ -124,12 +169,102 @@ final class PictureInPictureRenderer: NSObject,
       ) == noErr,
       let sample
     else { return }
+    PictureInPictureSampleBuffer.configureForImmediateDisplay(sample)
+    presentationLock.lock()
+    defer { presentationLock.unlock() }
+    enqueueLocked(
+      PendingSample(
+        sample: sample,
+        snapshot: snapshot,
+        generation: generation,
+        renderSerial: renderSerial
+      )
+    )
+  }
+
+  private func enqueueLocked(_ candidate: PendingSample) {
+    guard frameGate.accepts(candidate.generation),
+      renderBoundary.accepts(candidate.renderSerial)
+    else { return }
+    let decision = timingPolicy.prepareFrame(candidate.snapshot)
+    guard decision.acceptsFrame else { return }
     if displayLayer.status == .failed {
-      displayLayer.flush()
+      displayLayer.flushAndRemoveImage()
     }
-    if displayLayer.isReadyForMoreMediaData {
-      displayLayer.enqueue(sample)
+    guard displayLayer.isReadyForMoreMediaData else {
+      pendingSample = candidate
+      requestMediaDataWhenReadyLocked()
+      return
     }
+    pendingSample = nil
+    stopRequestingMediaDataLocked()
+    if decision.flush { displayLayer.flushAndRemoveImage() }
+    displayLayer.enqueue(candidate.sample)
+    lastPresentedFrame = PresentedFrame(
+      position: candidate.snapshot.position,
+      renderSerial: candidate.renderSerial
+    )
+    let committed = timingPolicy.commitFrame(candidate.snapshot)
+    awaitingRestartReplay = false
+    apply(committed, allowingFlush: false)
+  }
+
+  private func requestMediaDataWhenReadyLocked() {
+    guard !readinessRequestActive else { return }
+    readinessRequestActive = true
+    displayLayer.requestMediaDataWhenReady(on: mediaDataQueue) { [weak self] in
+      self?.drainPendingSample()
+    }
+  }
+
+  private func drainPendingSample() {
+    presentationLock.lock()
+    guard let candidate = pendingSample else {
+      stopRequestingMediaDataLocked()
+      presentationLock.unlock()
+      return
+    }
+    guard frameGate.accepts(candidate.generation),
+      renderBoundary.accepts(candidate.renderSerial)
+    else {
+      pendingSample = nil
+      stopRequestingMediaDataLocked()
+      presentationLock.unlock()
+      return
+    }
+    guard displayLayer.isReadyForMoreMediaData else {
+      presentationLock.unlock()
+      return
+    }
+    pendingSample = nil
+    stopRequestingMediaDataLocked()
+    enqueueLocked(candidate)
+    presentationLock.unlock()
+  }
+
+  private func stopRequestingMediaDataLocked() {
+    guard readinessRequestActive else { return }
+    displayLayer.stopRequestingMediaData()
+    readinessRequestActive = false
+  }
+
+  private func discardPendingSampleLocked() {
+    pendingSample = nil
+    stopRequestingMediaDataLocked()
+  }
+
+  private func updatePendingSampleStateLocked(
+    with snapshot: PictureInPictureTimingPolicy.Snapshot
+  ) {
+    guard let pendingSample else { return }
+    var current = snapshot
+    current.position = pendingSample.snapshot.position
+    self.pendingSample = PendingSample(
+      sample: pendingSample.sample,
+      snapshot: current,
+      generation: pendingSample.generation,
+      renderSerial: pendingSample.renderSerial
+    )
   }
 
   func start() -> Bool {
@@ -184,7 +319,11 @@ final class PictureInPictureRenderer: NSObject,
     }
     _ = controller
     observePictureInPicturePossibility()
-    syncPlaybackTimebase()
+    ensureStateObserver()
+    let snapshot = readPlaybackSnapshot()
+    presentationLock.lock()
+    apply(timingPolicy.stateChanged(snapshot))
+    presentationLock.unlock()
     setCaptureRequested(true)
     return true
   }
@@ -199,6 +338,7 @@ final class PictureInPictureRenderer: NSObject,
     guard startRequested || shouldCaptureFrame else { return false }
     startRequested = false
     setCaptureRequested(false)
+    stopStateObserver()
     detachDisplayLayer()
     stateCallback("stopped", nil)
     return true
@@ -241,48 +381,219 @@ final class PictureInPictureRenderer: NSObject,
     else { return }
     playbackTimebase = timebase
     displayLayer.controlTimebase = timebase
-    syncPlaybackTimebase()
+    let snapshot = readPlaybackSnapshot()
+    presentationLock.lock()
+    apply(timingPolicy.stateChanged(snapshot))
+    presentationLock.unlock()
   }
 
-  private func syncPlaybackTimebase(position suppliedPosition: CMTime? = nil) {
+  private func apply(
+    _ decision: PictureInPictureTimingPolicy.Decision,
+    allowingFlush: Bool = true
+  ) {
+    if allowingFlush && decision.flush {
+      displayLayer.flushAndRemoveImage()
+    }
     guard let playbackTimebase else { return }
-    let state = readPlaybackState()
-    let time = suppliedPosition ?? (
-      state.position.isFinite && state.position >= 0
-        ? CMTime(seconds: state.position, preferredTimescale: 600)
-        : .zero
-    )
-    CMTimebaseSetTime(playbackTimebase, time: time)
-    CMTimebaseSetRate(playbackTimebase, rate: state.paused ? 0 : 1)
+    if let anchor = decision.anchor, let rate = decision.rate {
+      CMTimebaseSetRateAndAnchorTime(
+        playbackTimebase,
+        rate: rate,
+        anchorTime: CMTime(seconds: anchor, preferredTimescale: 600),
+        immediateSourceTime: CMClockGetTime(CMClockGetHostTimeClock())
+      )
+    } else if let rate = decision.rate {
+      CMTimebaseSetRate(playbackTimebase, rate: rate)
+    }
   }
 
-  private func readPlaybackState() -> (position: Double, duration: Double, paused: Bool) {
+  private func readPlaybackSnapshot() -> PictureInPictureTimingPolicy.Snapshot {
     handleLock.lock()
     defer { handleLock.unlock() }
     guard let handle else {
-      return (cachedPosition, cachedDuration, cachedPaused)
+      return cachedSnapshot
     }
     var position = cachedPosition
     var duration = cachedDuration
     var paused: Int32 = cachedPaused ? 1 : 0
+    var buffering: Int32 = cachedBuffering ? 1 : 0
+    var coreIdle: Int32 = cachedCoreIdle ? 1 : 0
+    var seeking: Int32 = cachedSeeking ? 1 : 0
+    var speed = cachedSpeed
     mpv_get_property(handle, "time-pos", MPV_FORMAT_DOUBLE, &position)
     mpv_get_property(handle, "duration", MPV_FORMAT_DOUBLE, &duration)
     mpv_get_property(handle, "pause", MPV_FORMAT_FLAG, &paused)
+    mpv_get_property(handle, "paused-for-cache", MPV_FORMAT_FLAG, &buffering)
+    mpv_get_property(handle, "core-idle", MPV_FORMAT_FLAG, &coreIdle)
+    mpv_get_property(handle, "seeking", MPV_FORMAT_FLAG, &seeking)
+    mpv_get_property(handle, "speed", MPV_FORMAT_DOUBLE, &speed)
     if position.isFinite && position >= 0 { cachedPosition = position }
     if duration.isFinite && duration > 0 { cachedDuration = duration }
     cachedPaused = paused != 0
-    return (cachedPosition, cachedDuration, cachedPaused)
+    cachedCoreIdle = coreIdle != 0
+    cachedBuffering = buffering != 0 || (cachedCoreIdle && paused == 0)
+    cachedSeeking = seeking != 0
+    if speed.isFinite && speed > 0 { cachedSpeed = speed }
+    return cachedSnapshot
   }
 
-  /// Sample PTS only needs media position; duration and pause are delegate state.
-  private func readPlaybackPosition() -> Double {
+  private var cachedSnapshot: PictureInPictureTimingPolicy.Snapshot {
+    PictureInPictureTimingPolicy.Snapshot(
+      position: cachedPosition,
+      duration: cachedDuration,
+      paused: cachedPaused,
+      buffering: cachedBuffering,
+      seeking: cachedSeeking,
+      speed: cachedSpeed
+    )
+  }
+
+  /// Render callbacks are frame-paced; only media time is sampled here. The
+  /// separate mpv client keeps the slower-changing playback flags current.
+  private func readFrameSnapshot() -> PictureInPictureTimingPolicy.Snapshot {
     handleLock.lock()
     defer { handleLock.unlock() }
-    guard let handle else { return cachedPosition }
-    var position = cachedPosition
-    mpv_get_property(handle, "time-pos", MPV_FORMAT_DOUBLE, &position)
-    if position.isFinite && position >= 0 { cachedPosition = position }
-    return cachedPosition
+    if let handle {
+      var position = cachedPosition
+      if mpv_get_property(handle, "time-pos", MPV_FORMAT_DOUBLE, &position) >= 0,
+        position.isFinite, position >= 0
+      {
+        cachedPosition = position
+      }
+    }
+    return cachedSnapshot
+  }
+
+  private func playbackStateChanged(
+    _ event: PictureInPictureStateObserver.Event,
+    epoch: UInt64
+  ) {
+    let snapshot = readPlaybackSnapshot()
+    presentationLock.lock()
+    guard epoch == stateObserverEpoch else {
+      presentationLock.unlock()
+      return
+    }
+    let decision: PictureInPictureTimingPolicy.Decision
+    switch event {
+    case .discontinuity:
+      let preservesNativeTarget = nativeSeek.pending
+      if preservesNativeTarget {
+        // The delegate established this boundary before issuing mpv_set_property.
+        // Replacing it here could reject a sole paused target frame.
+        decision = timingPolicy.beginDiscontinuity(
+          at: snapshot.position,
+          preservingPendingSeek: true
+        )
+      } else {
+        let certifiedTargetSerial = certifiedTargetSerial(for: snapshot)
+        decision = beginDiscontinuityLocked(
+          at: snapshot.position,
+          preservingPendingSeek: false
+        )
+        if let certifiedTargetSerial {
+          renderBoundary.allowRendered(certifiedTargetSerial)
+        }
+      }
+    case .playbackRestarted:
+      nativeSeek.playbackRestarted()
+      advanceCaptureGeneration()
+      discardPendingSampleLocked()
+      awaitingRestartReplay = true
+      decision = timingPolicy.playbackRestarted(snapshot)
+    case .stateChanged:
+      updatePendingSampleStateLocked(with: snapshot)
+      decision = timingPolicy.stateChanged(snapshot)
+    }
+    apply(decision)
+    let isPlaybackRestart: Bool
+    if case .playbackRestarted = event {
+      isPlaybackRestart = true
+    } else {
+      isPlaybackRestart = false
+    }
+    let shouldPrimeRetainedFrame =
+      isPlaybackRestart || (awaitingRestartReplay && !snapshot.seeking)
+    presentationLock.unlock()
+    if shouldPrimeRetainedFrame {
+      postDiscontinuityFrameCallback()
+    }
+  }
+
+  private func ensureStateObserver() {
+    guard stateObserver == nil else { return }
+    handleLock.lock()
+    let currentHandle = handle
+    handleLock.unlock()
+    guard let currentHandle else { return }
+    presentationLock.lock()
+    stateObserverEpoch &+= 1
+    timingPolicy = PictureInPictureTimingPolicy()
+    nativeSeek = PictureInPictureNativeSeekTracker()
+    awaitingRestartReplay = false
+    renderBoundary.reset()
+    discardPendingSampleLocked()
+    let epoch = stateObserverEpoch
+    presentationLock.unlock()
+    stateObserver = PictureInPictureStateObserver(
+      handle: currentHandle,
+      callback: { [weak self] event in
+        self?.playbackStateChanged(event, epoch: epoch)
+      }
+    )
+  }
+
+  private func stopStateObserver() {
+    stateObserver?.cancel()
+    stateObserver = nil
+    presentationLock.lock()
+    stateObserverEpoch &+= 1
+    timingPolicy = PictureInPictureTimingPolicy()
+    nativeSeek = PictureInPictureNativeSeekTracker()
+    lastPresentedFrame = nil
+    awaitingRestartReplay = false
+    renderBoundary.reset()
+    discardPendingSampleLocked()
+    advanceCaptureGeneration()
+    presentationLock.unlock()
+  }
+
+  private func advanceCaptureGeneration() {
+    frameGate.advance()
+  }
+
+  private func beginDiscontinuityLocked(
+    at position: Double,
+    preservingPendingSeek: Bool
+  ) -> PictureInPictureTimingPolicy.Decision {
+    advanceCaptureGeneration()
+    discardPendingSampleLocked()
+    awaitingRestartReplay = false
+    let boundary = renderBoundaryCallback()
+    renderBoundary.requireRender(after: boundary)
+    return timingPolicy.beginDiscontinuity(
+      at: position,
+      preservingPendingSeek: preservingPendingSeek
+    )
+  }
+
+  private func certifiedTargetSerial(
+    for snapshot: PictureInPictureTimingPolicy.Snapshot
+  ) -> UInt64? {
+    guard !snapshot.seeking, snapshot.position.isFinite, snapshot.position >= 0 else {
+      return nil
+    }
+    let currentSerial = renderBoundaryCallback()
+    let pendingFrame = pendingSample.map {
+      PresentedFrame(position: $0.snapshot.position, renderSerial: $0.renderSerial)
+    }
+    return [pendingFrame, lastPresentedFrame]
+      .compactMap { $0 }
+      .filter {
+        $0.renderSerial == currentSerial && abs($0.position - snapshot.position) <= 0.25
+      }
+      .map(\.renderSerial)
+      .max()
   }
 
   private func detachDisplayLayer() {
@@ -290,7 +601,10 @@ final class PictureInPictureRenderer: NSObject,
       DispatchQueue.main.async { [weak self] in self?.detachDisplayLayer() }
       return
     }
+    presentationLock.lock()
+    discardPendingSampleLocked()
     displayLayer.flushAndRemoveImage()
+    presentationLock.unlock()
     displayLayer.removeFromSuperlayer()
     hostLayer = nil
   }
@@ -368,6 +682,7 @@ final class PictureInPictureRenderer: NSObject,
     requestGeneration += 1
     startRequested = false
     setCaptureRequested(false)
+    stopStateObserver()
     detachDisplayLayer()
     stateCallback("failed", ["domain": domain, "code": code])
   }
@@ -399,6 +714,7 @@ final class PictureInPictureRenderer: NSObject,
   ) {
     setCaptureRequested(false)
     setPresentationOwned(false)
+    stopStateObserver()
     detachDisplayLayer()
     stateCallback("stopped", nil)
   }
@@ -414,20 +730,23 @@ final class PictureInPictureRenderer: NSObject,
       mpv_set_property(handle, "pause", MPV_FORMAT_FLAG, &paused)
     }
     handleLock.unlock()
-    syncPlaybackTimebase()
+    let snapshot = readPlaybackSnapshot()
+    presentationLock.lock()
+    apply(timingPolicy.stateChanged(snapshot))
+    presentationLock.unlock()
     pictureInPictureController.invalidatePlaybackState()
   }
 
   func pictureInPictureControllerIsPlaybackPaused(
     _ pictureInPictureController: AVPictureInPictureController
   ) -> Bool {
-    readPlaybackState().paused
+    readPlaybackSnapshot().paused
   }
 
   func pictureInPictureControllerTimeRangeForPlayback(
     _ pictureInPictureController: AVPictureInPictureController
   ) -> CMTimeRange {
-    let duration = readPlaybackState().duration
+    let duration = readPlaybackSnapshot().duration
     if duration.isFinite && duration > 0 {
       return CMTimeRange(start: .zero, duration: CMTime(seconds: duration, preferredTimescale: 600))
     }
@@ -439,29 +758,51 @@ final class PictureInPictureRenderer: NSObject,
     skipByInterval skipInterval: CMTime,
     completion: @escaping () -> Void
   ) {
-    let state = readPlaybackState()
-    let position = state.position
-    let duration = state.duration
+    defer { completion() }
+    let snapshot = readPlaybackSnapshot()
     let offset = CMTimeGetSeconds(skipInterval)
-    guard position.isFinite, offset.isFinite else {
-      completion()
+    presentationLock.lock()
+    guard let request = timingPolicy.seek(
+      from: snapshot.position,
+      by: offset,
+      duration: snapshot.duration
+    ) else {
+      presentationLock.unlock()
       return
     }
-    var target = max(0, position + offset)
-    if duration.isFinite && duration > 0 {
-      target = min(target, duration)
-    }
+    nativeSeek.issued()
+    apply(
+      beginDiscontinuityLocked(
+        at: request.origin,
+        preservingPendingSeek: true
+      )
+    )
+    presentationLock.unlock()
+
+    stateCallback("seek", [
+      "originSeconds": request.origin,
+      "targetSeconds": request.target,
+    ])
+    var target = request.target
     handleLock.lock()
-    cachedPosition = target
+    let result: Int32
     if let handle {
-      mpv_set_property(handle, "time-pos", MPV_FORMAT_DOUBLE, &target)
+      result = mpv_set_property(handle, "time-pos", MPV_FORMAT_DOUBLE, &target)
+    } else {
+      result = -1
     }
     handleLock.unlock()
-    syncPlaybackTimebase(
-      position: CMTime(seconds: target, preferredTimescale: 600)
-    )
+    if result < 0 {
+      let current = readPlaybackSnapshot()
+      presentationLock.lock()
+      nativeSeek.failed()
+      renderBoundary.reset()
+      awaitingRestartReplay = false
+      apply(timingPolicy.recoverFailedSeek(with: current))
+      presentationLock.unlock()
+      postDiscontinuityFrameCallback()
+    }
     pictureInPictureController.invalidatePlaybackState()
-    completion()
   }
 
   func pictureInPictureController(

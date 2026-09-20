@@ -42,18 +42,43 @@ public class MediaKitVideoPlugin: NSObject, FlutterPlugin {
     self.channel = channel
     videoOutputManager = VideoOutputManager(
       registry: registry,
-      pictureInPictureStateCallback: { handle, state, error in
-        var arguments: [String: Any] = [
-          "handle": handle,
-          "state": state,
-        ]
-        if let error {
-          arguments["error"] = error
+      pictureInPictureStateCallback: { handle, state, details in
+        let invoke = {
+          if state == "seek" {
+            guard
+              let origin = details?["originSeconds"] as? Double,
+              let target = details?["targetSeconds"] as? Double,
+              origin.isFinite,
+              target.isFinite
+            else { return }
+            channel.invokeMethod(
+              "VideoOutput.PictureInPictureSeek",
+              arguments: [
+                "handle": handle,
+                "originSeconds": origin,
+                "targetSeconds": target,
+              ] as [String: Any]
+            )
+            return
+          }
+
+          var arguments: [String: Any] = [
+            "handle": handle,
+            "state": state,
+          ]
+          if let details {
+            arguments["error"] = details
+          }
+          channel.invokeMethod(
+            "VideoOutput.PictureInPictureState",
+            arguments: arguments
+          )
         }
-        channel.invokeMethod(
-          "VideoOutput.PictureInPictureState",
-          arguments: arguments
-        )
+        if Thread.isMainThread {
+          invoke()
+        } else {
+          DispatchQueue.main.async(execute: invoke)
+        }
       }
     )
     self.utils = utils

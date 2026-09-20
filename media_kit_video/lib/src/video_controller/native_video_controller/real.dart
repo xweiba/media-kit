@@ -15,6 +15,10 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/src/utils/query_decoders.dart';
 import 'package:media_kit_video/src/video_controller/platform_video_controller.dart';
 
+// Duration stores signed 64-bit microseconds. Keep conversion below its
+// positive limit before multiplying the platform's seconds value.
+const double _maximumDurationSeconds = 9223372036854;
+
 /// Decodes the stable native wire value without throwing on newer states.
 @visibleForTesting
 PictureInPictureState? pictureInPictureStateFromName(Object? name) {
@@ -22,6 +26,38 @@ PictureInPictureState? pictureInPictureStateFromName(Object? name) {
     if (value.name == name) return value;
   }
   return null;
+}
+
+/// Decodes a native PiP seek payload after validating its wire contract.
+@visibleForTesting
+MapEntry<int, PictureInPictureSeekEvent>?
+    pictureInPictureSeekEventFromArguments(Object? arguments) {
+  if (arguments is! Map) return null;
+  final handle = arguments['handle'];
+  final originSeconds = arguments['originSeconds'];
+  final targetSeconds = arguments['targetSeconds'];
+  if (handle is! int ||
+      originSeconds is! double ||
+      targetSeconds is! double ||
+      !originSeconds.isFinite ||
+      !targetSeconds.isFinite ||
+      originSeconds < 0 ||
+      targetSeconds < 0 ||
+      originSeconds > _maximumDurationSeconds ||
+      targetSeconds > _maximumDurationSeconds) {
+    return null;
+  }
+  try {
+    return MapEntry(
+      handle,
+      PictureInPictureSeekEvent(
+        origin: Duration(microseconds: (originSeconds * 1000000).round()),
+        target: Duration(microseconds: (targetSeconds * 1000000).round()),
+      ),
+    );
+  } on Object {
+    return null;
+  }
 }
 
 /// {@template native_video_controller}
@@ -311,6 +347,18 @@ class NativeVideoController extends PlatformVideoController {
                   );
                   if (state != null) {
                     _controllers[handle]?.pictureInPictureState.value = state;
+                  }
+                  break;
+                }
+              case 'VideoOutput.PictureInPictureSeek':
+                {
+                  final message = pictureInPictureSeekEventFromArguments(
+                    call.arguments,
+                  );
+                  if (message != null) {
+                    _controllers[message.key]?.publishPictureInPictureSeek(
+                      message.value,
+                    );
                   }
                   break;
                 }
