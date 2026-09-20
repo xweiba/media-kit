@@ -123,6 +123,12 @@ final class PictureInPictureRenderer: NSObject,
     return captureRequested
   }
 
+  /// macOS keeps its existing full-rate capture policy. The shared output uses
+  /// this admission API so iOS can independently throttle prepared warmup.
+  var captureGenerationIfRequested: UInt64? {
+    shouldCaptureFrame ? frameGate.token : nil
+  }
+
   /// 系统 PiP 活跃时由 display layer 独占呈现，Flutter 无需同步合成同一帧。
   var ownsPresentation: Bool {
     captureLock.lock()

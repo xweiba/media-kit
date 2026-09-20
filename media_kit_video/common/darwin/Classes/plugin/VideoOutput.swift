@@ -235,9 +235,9 @@ public class VideoOutput: NSObject {
     #if os(iOS) || os(macOS)
       if #available(iOS 15.0, macOS 12.0, *),
         let renderer = pictureInPictureRenderer as? PictureInPictureRenderer,
-        renderer.shouldCaptureFrame
+        let requestedGeneration = renderer.captureGenerationIfRequested
       {
-        captureGeneration = renderer.captureGeneration
+        captureGeneration = requestedGeneration
       }
     #endif
 
@@ -251,9 +251,7 @@ public class VideoOutput: NSObject {
         let renderer = pictureInPictureRenderer as? PictureInPictureRenderer
       {
         pictureInPictureOwnsPresentation = renderer.ownsPresentation
-        if let captureGeneration,
-          renderer.shouldCaptureFrame
-        {
+        if let captureGeneration {
           if let pixelBuffer = texture.copyPixelBuffer()?.takeRetainedValue() {
             renderer.enqueue(
               pixelBuffer,
@@ -285,9 +283,8 @@ public class VideoOutput: NSObject {
   private func primePictureInPictureFrame(_ renderer: PictureInPictureRenderer) {
     worker.enqueue { [weak self, weak renderer] in
       guard let self, let renderer, let texture = self.texture,
-        renderer.shouldCaptureFrame
+        let generation = renderer.captureGenerationIfRequested
       else { return }
-      let generation = renderer.captureGeneration
       if let pixelBuffer = texture.copyPixelBuffer()?.takeRetainedValue() {
         renderer.enqueue(
           pixelBuffer,

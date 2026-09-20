@@ -32,7 +32,9 @@ final class PictureInPictureRenderer: NSObject,
   private var timingPolicy = PictureInPictureTimingPolicy()
   private var pictureInPicturePossibleObservation: NSKeyValueObservation?
   private weak var hostLayer: CALayer?
-  private var captureRequested = false
+  private var capturePolicy = PictureInPictureCapturePolicy()
+  private var lifecycleObservers: [NSObjectProtocol] = []
+  private var stoppingExplicitly = false
   private let frameGate = PictureInPictureFrameGate()
   private var renderBoundary = PictureInPictureRenderBoundary()
   private var nativeSeek = PictureInPictureNativeSeekTracker()
@@ -91,6 +93,7 @@ final class PictureInPictureRenderer: NSObject,
   }
 
   deinit {
+    removeLifecycleObservers()
     stateObserver?.cancel()
     displayLayer.stopRequestingMediaData()
     pictureInPicturePossibleObservation?.invalidate()
@@ -109,7 +112,8 @@ final class PictureInPictureRenderer: NSObject,
     dispatchPrecondition(condition: .onQueue(.main))
     requestGeneration += 1
     startRequested = false
-    setCaptureRequested(false)
+    updateCapturePolicy { $0.dispose() }
+    removeLifecycleObservers()
     stopStateObserver()
     pictureInPicturePossibleObservation?.invalidate()
     pictureInPicturePossibleObservation = nil
@@ -128,7 +132,16 @@ final class PictureInPictureRenderer: NSObject,
   var shouldCaptureFrame: Bool {
     captureLock.lock()
     defer { captureLock.unlock() }
-    return captureRequested
+    return capturePolicy.mode != .stopped
+  }
+
+  var captureGenerationIfRequested: UInt64? {
+    captureLock.lock()
+    let admitted = capturePolicy.admitsFrame(
+      at: ProcessInfo.processInfo.systemUptime
+    )
+    captureLock.unlock()
+    return admitted ? frameGate.token : nil
   }
 
   /// 系统 PiP 活跃时由 display layer 独占呈现，Flutter 无需同步合成同一帧。
@@ -276,6 +289,7 @@ final class PictureInPictureRenderer: NSObject,
     requestGeneration += 1
     let generation = requestGeneration
     startRequested = true
+    updateCapturePolicy { $0.requestStart() }
     stateCallback("starting", nil)
     startWhenReady()
     // ContentSource 只有收到首个 sample 后才会变为 possible，因此等待渲染回调启动。
@@ -319,12 +333,17 @@ final class PictureInPictureRenderer: NSObject,
     }
     _ = controller
     observePictureInPicturePossibility()
+    observeApplicationLifecycle()
     ensureStateObserver()
     let snapshot = readPlaybackSnapshot()
     presentationLock.lock()
     apply(timingPolicy.stateChanged(snapshot))
     presentationLock.unlock()
-    setCaptureRequested(true)
+    updateCapturePolicy {
+      $0.prepare(
+        applicationActive: UIApplication.shared.applicationState == .active
+      )
+    }
     return true
   }
 
@@ -332,12 +351,14 @@ final class PictureInPictureRenderer: NSObject,
     dispatchPrecondition(condition: .onQueue(.main))
     requestGeneration += 1
     if controller.isPictureInPictureActive {
+      stoppingExplicitly = true
       controller.stopPictureInPicture()
       return true
     }
     guard startRequested || shouldCaptureFrame else { return false }
     startRequested = false
-    setCaptureRequested(false)
+    updateCapturePolicy { $0.stop() }
+    removeLifecycleObservers()
     stopStateObserver()
     detachDisplayLayer()
     stateCallback("stopped", nil)
@@ -664,10 +685,42 @@ final class PictureInPictureRenderer: NSObject,
     return description
   }
 
-  private func setCaptureRequested(_ value: Bool) {
+  private func updateCapturePolicy(
+    _ update: (inout PictureInPictureCapturePolicy) -> Void
+  ) {
     captureLock.lock()
-    captureRequested = value
+    update(&capturePolicy)
     captureLock.unlock()
+  }
+
+  private func observeApplicationLifecycle() {
+    guard lifecycleObservers.isEmpty else { return }
+    let center = NotificationCenter.default
+    lifecycleObservers = [
+      center.addObserver(
+        forName: UIApplication.willResignActiveNotification,
+        object: nil,
+        queue: .main
+      ) { [weak self] _ in
+        self?.updateCapturePolicy { $0.setApplicationActive(false) }
+        self?.postDiscontinuityFrameCallback()
+      },
+      center.addObserver(
+        forName: UIApplication.didBecomeActiveNotification,
+        object: nil,
+        queue: .main
+      ) { [weak self] _ in
+        self?.updateCapturePolicy { $0.setApplicationActive(true) }
+      },
+    ]
+  }
+
+  private func removeLifecycleObservers() {
+    let observers = lifecycleObservers
+    lifecycleObservers.removeAll()
+    for observer in observers {
+      NotificationCenter.default.removeObserver(observer)
+    }
   }
 
   private func setPresentationOwned(_ value: Bool) {
@@ -681,7 +734,8 @@ final class PictureInPictureRenderer: NSObject,
   private func reportFailure(domain: String, code: Int) {
     requestGeneration += 1
     startRequested = false
-    setCaptureRequested(false)
+    updateCapturePolicy { $0.stop() }
+    removeLifecycleObservers()
     stopStateObserver()
     detachDisplayLayer()
     stateCallback("failed", ["domain": domain, "code": code])
@@ -690,6 +744,7 @@ final class PictureInPictureRenderer: NSObject,
   func pictureInPictureControllerDidStartPictureInPicture(
     _ pictureInPictureController: AVPictureInPictureController
   ) {
+    updateCapturePolicy { $0.setPictureInPictureActive(true) }
     setPresentationOwned(true)
     pictureInPictureController.invalidatePlaybackState()
     stateCallback("active", nil)
@@ -712,10 +767,18 @@ final class PictureInPictureRenderer: NSObject,
   func pictureInPictureControllerDidStopPictureInPicture(
     _ pictureInPictureController: AVPictureInPictureController
   ) {
-    setCaptureRequested(false)
+    let shouldStop = stoppingExplicitly
+    stoppingExplicitly = false
+    updateCapturePolicy {
+      $0.setPictureInPictureActive(false)
+      if shouldStop { $0.stop() }
+    }
     setPresentationOwned(false)
-    stopStateObserver()
-    detachDisplayLayer()
+    if shouldStop {
+      removeLifecycleObservers()
+      stopStateObserver()
+      detachDisplayLayer()
+    }
     stateCallback("stopped", nil)
   }
 
