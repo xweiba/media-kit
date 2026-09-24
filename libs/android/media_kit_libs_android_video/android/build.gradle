@@ -58,10 +58,10 @@ task downloadDependencies(type: Exec) {
 
         // Download all *.jar dependencies & verify their SHA-256 checksums.
         def filesToDownload = [
-            ["url": "https://github.com/xweiba/libmpv-android-video-build/releases/download/v1.2.7-mediaio.1/default-arm64-v8a.jar", "sha256": "3b30f26248615107d0cc81368ea0ca89fdfe856d590298aa0bce19c219b008b1", "destination": file("$buildDir/v1.2.7-mediaio.1/default-arm64-v8a.jar")],
-            ["url": "https://github.com/xweiba/libmpv-android-video-build/releases/download/v1.2.7-mediaio.1/default-armeabi-v7a.jar", "sha256": "0542a9476d5f866eea36a658e0988edccfb6b00d267dedddb6947ed9586add8c", "destination": file("$buildDir/v1.2.7-mediaio.1/default-armeabi-v7a.jar")],
-            ["url": "https://github.com/xweiba/libmpv-android-video-build/releases/download/v1.2.7-mediaio.1/default-x86_64.jar", "sha256": "b48d062262ca336672565c63f1a49a718108b84382f63e8b08e98712c6adbbc7", "destination": file("$buildDir/v1.2.7-mediaio.1/default-x86_64.jar")],
-            ["url": "https://github.com/xweiba/libmpv-android-video-build/releases/download/v1.2.7-mediaio.1/default-x86.jar", "sha256": "fa430b70b059be13430552f61cfa07938a6a60fb48176990ef992fee370dbf57", "destination": file("$buildDir/v1.2.7-mediaio.1/default-x86.jar")]
+            ["url": "https://github.com/xweiba/libmpv-android-video-build/releases/download/v1.2.7-mediaio.2/default-arm64-v8a.jar", "sha256": "a2475f4360762ab28e44246c0b16eb66a72da0c7263f6fd2166023ab759ba41d", "destination": file("$buildDir/v1.2.7-mediaio.2/default-arm64-v8a.jar")],
+            ["url": "https://github.com/xweiba/libmpv-android-video-build/releases/download/v1.2.7-mediaio.2/default-armeabi-v7a.jar", "sha256": "888abf10e2c3a09afda3d49bb950ef58314c6fb86cf3f6324fef609340edfc7c", "destination": file("$buildDir/v1.2.7-mediaio.2/default-armeabi-v7a.jar")],
+            ["url": "https://github.com/xweiba/libmpv-android-video-build/releases/download/v1.2.7-mediaio.2/default-x86_64.jar", "sha256": "a9abc18d1e0f8747bd35f8bfb1dee66b12d437c30e9042792dcc172949d2acac", "destination": file("$buildDir/v1.2.7-mediaio.2/default-x86_64.jar")],
+            ["url": "https://github.com/xweiba/libmpv-android-video-build/releases/download/v1.2.7-mediaio.2/default-x86.jar", "sha256": "1d8b571cc642599f8b738d1e2f28938972c74d5ae9d33c1811929fc833f4265a", "destination": file("$buildDir/v1.2.7-mediaio.2/default-x86.jar")]
         ]
 
         filesToDownload.each { fileInfo ->
