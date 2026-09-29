@@ -128,6 +128,11 @@ class VideoController {
     () async {
       final completer = Completer();
       WidgetsBinding.instance.addPostFrameCallback((_) => completer.complete());
+      // Async preparation may create the controller on a completely idle
+      // Flutter scene (e.g. a native loading indicator). A post-frame callback
+      // does not request a frame itself, leaving Player.open waiting forever.
+      // Schedule only the required frame; do not introduce a rendering loop.
+      WidgetsBinding.instance.ensureVisualUpdate();
       await completer.future;
 
       try {
