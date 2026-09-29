@@ -3,6 +3,8 @@
 /// Copyright © 2021 & onwards, Hitesh Kumar Saini <saini123hitesh@gmail.com>.
 /// All rights reserved.
 /// Use of this source code is governed by MIT license that can be found in the LICENSE file.
+import 'dart:async';
+
 import 'package:meta/meta.dart';
 
 import 'package:media_kit/src/player/platform_player.dart';
@@ -11,6 +13,10 @@ void nativeEnsureInitialized({String? libmpv}) {}
 
 class NativePlayer extends PlatformPlayer {
   NativePlayer({required super.configuration});
+
+  /// Native file-restart evidence is unavailable on the web implementation.
+  /// Keep the conditional export API compatible without fabricating readiness.
+  Stream<void> get firstFrameOfMedia => const Stream<void>.empty();
 
   /// Whether the [NativePlayer] is initialized for unit-testing.
   @visibleForTesting

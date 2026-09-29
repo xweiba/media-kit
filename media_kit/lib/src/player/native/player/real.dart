@@ -100,6 +100,7 @@ class NativePlayer extends PlatformPlayer {
       disposed = true;
 
       await super.dispose();
+      await _firstFrameOfMedia.close();
 
       Initializer(mpv).dispose(ctx);
 
@@ -269,7 +270,6 @@ class NativePlayer extends PlatformPlayer {
       final commands = [
         ['stop'],
         ['playlist-clear'],
-        ['playlist-play-index', 'none'],
       ];
       for (final command in commands) {
         await _command(command);
@@ -720,7 +720,7 @@ class NativePlayer extends PlatformPlayer {
         'seek',
         (duration.inMilliseconds / 1000).toStringAsFixed(4),
         'absolute'
-      ]);
+      ], throwOnError: true);
 
       // It is self explanatory that PlayerState.completed & PlayerStream.completed must enter the false state if seek is called. Typically after EOF.
       // https://github.com/media-kit/media-kit/issues/221
@@ -1477,6 +1477,7 @@ class NativePlayer extends PlatformPlayer {
     );
 
     if (event.ref.event_id == generated.mpv_event_id.MPV_EVENT_START_FILE) {
+      _awaitingFirstFrameOfMedia = true;
       if (isPlayingStateChangeAllowed) {
         state = state.copyWith(
           playing: true,
@@ -1493,6 +1494,15 @@ class NativePlayer extends PlatformPlayer {
       if (!bufferingController.isClosed) {
         bufferingController.add(true);
       }
+    }
+    if (event.ref.event_id == generated.mpv_event_id.MPV_EVENT_END_FILE) {
+      _awaitingFirstFrameOfMedia = false;
+    }
+    if (event.ref.event_id ==
+            generated.mpv_event_id.MPV_EVENT_PLAYBACK_RESTART &&
+        _awaitingFirstFrameOfMedia) {
+      _awaitingFirstFrameOfMedia = false;
+      if (!_firstFrameOfMedia.isClosed) _firstFrameOfMedia.add(null);
     }
     // NOTE: Now, --keep-open=yes is used. Thus, eof-reached property is used instead of this.
     // if (event.ref.event_id == generated.mpv_event_id.MPV_EVENT_END_FILE) {
@@ -2647,34 +2657,57 @@ class NativePlayer extends PlatformPlayer {
     calloc.free(string);
   }
 
-  Future<void> _command(List<String> args) async {
+  /// Submits a native command, freeing its argument storage on every outcome.
+  /// [throwOnError] propagates rejection to callers such as seek, which must
+  /// not publish successful completion after a failed native command.
+  Future<void> _command(List<String> args, {bool throwOnError = false}) async {
     final pointers = args.map<Pointer<Utf8>>((e) => e.toNativeUtf8()).toList();
     final arr = calloc<Pointer<Utf8>>(128);
     for (int i = 0; i < args.length; i++) {
       (arr + i).value = pointers[i];
     }
-
-    if (configuration.async) {
-      final requestNumber = _asyncRequestNumber++;
-      final completer = _commandRequests[requestNumber] = Completer<int>();
-      final immediate = mpv.mpv_command_async(ctx, requestNumber, arr.cast());
-      final text = '_command(${args.join(', ')})';
-      if (immediate < 0) {
-        // Sending failed.
-        _logError(immediate, text);
-        return;
+    try {
+      final int result;
+      if (configuration.async) {
+        final requestNumber = _asyncRequestNumber++;
+        final completer = _commandRequests[requestNumber] = Completer<int>();
+        final immediate = mpv.mpv_command_async(ctx, requestNumber, arr.cast());
+        if (immediate < 0) {
+          // No reply event follows a rejected submission.
+          _commandRequests.remove(requestNumber);
+          result = immediate;
+        } else {
+          result = await completer.future;
+        }
+      } else {
+        result = mpv.mpv_command(ctx, arr.cast());
       }
-      _logError(await completer.future, text);
-    } else {
-      mpv.mpv_command(ctx, arr.cast());
+      final text = '_command(${args.join(', ')})';
+      _logError(result, text);
+      if (throwOnError && result < 0) {
+        final reason = mpv.mpv_error_string(result).cast<Utf8>().toDartString();
+        throw StateError('mpv ${args.first} failed: $reason ($result)');
+      }
+    } finally {
+      calloc.free(arr);
+      pointers.forEach(calloc.free);
     }
-
-    calloc.free(arr);
-    pointers.forEach(calloc.free);
   }
 
   /// Generated libmpv C API bindings.
   final generated.MPV mpv;
+
+  /// First native playback restart after each file start.
+  ///
+  /// This is decoder readiness, not proof that a Flutter texture was presented;
+  /// audio-only files can emit it too. Later seeks/rebuffering in the same file
+  /// do not emit again. Failed files emit nothing, and disposal closes the
+  /// broadcast stream. Events are not replayed to late subscribers.
+  Stream<void> get firstFrameOfMedia => _firstFrameOfMedia.stream;
+
+  final StreamController<void> _firstFrameOfMedia =
+      StreamController<void>.broadcast(sync: true);
+  bool _awaitingFirstFrameOfMedia = false;
 
   /// [Pointer] to [generated.mpv_handle] of this instance.
   Pointer<generated.mpv_handle> ctx = nullptr;
