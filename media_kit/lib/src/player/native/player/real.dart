@@ -1256,6 +1256,31 @@ class NativePlayer extends PlatformPlayer {
     calloc.free(data);
   }
 
+  /// Sets [property] without waiting for libmpv to apply it.
+  ///
+  /// Requests are applied in the order made. Use it for properties whose
+  /// change blocks the core (re-creating the video output re-creates the GPU
+  /// context): a synchronous set would hold the calling isolate meanwhile.
+  Future<void> setPropertyAsync(String property, String value) async {
+    if (disposed) {
+      throw AssertionError('[Player] has been disposed');
+    }
+    final name = property.toNativeUtf8();
+    final data = value.toNativeUtf8();
+    final pointer = calloc<Pointer<Utf8>>()..value = data;
+    // libmpv copies the name and the value before returning.
+    mpv.mpv_set_property_async(
+      ctx,
+      0,
+      name.cast(),
+      generated.mpv_format.MPV_FORMAT_STRING,
+      pointer.cast(),
+    );
+    calloc.free(pointer);
+    calloc.free(name);
+    calloc.free(data);
+  }
+
   /// Retrieves the value of a property from the internal libmpv instance of this [Player].
   /// Please use this method only if you know what you are doing, existing methods in [Player] implementation are suited for the most use cases.
   ///
