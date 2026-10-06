@@ -1419,7 +1419,8 @@ class WebPlayer extends PlatformPlayer {
   Future<Uint8List?> safeScreenshot(
       {String? format = 'image/jpeg',
       bool synchronized = true,
-      bool includeLibassSubtitles = false}) {
+      bool includeLibassSubtitles = false,
+      int? maxWidth}) {
     return screenshot(
       format: format,
       synchronized: synchronized,

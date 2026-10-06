@@ -8,16 +8,21 @@
 package com.alexmercerind.media_kit_video;
 
 import android.content.Context;
+import android.graphics.Bitmap;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.SurfaceHolder;
 import android.view.Gravity;
+import android.view.PixelCopy;
 import android.view.SurfaceView;
 import android.view.View;
 import android.widget.FrameLayout;
 
 import androidx.annotation.NonNull;
 
+import java.io.ByteArrayOutputStream;
+import java.nio.ByteBuffer;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -92,6 +97,72 @@ final class SurfaceVideoView implements PlatformView, SurfaceHolder.Callback {
         params.height = h;
         params.gravity = Gravity.CENTER;
         view.setLayoutParams(params);
+    }
+
+    /**
+     * Screenshot of the shown frame ({@link PixelCopy}): mpv never sees the frames in this mode.
+     * Copied at the video size (the surface buffer holds the decoded frame, the display scales
+     * it), encoded off the main thread. {@code format}: {@code jpeg}, {@code png} or {@code raw}
+     * (BGRA, like mpv's {@code screenshot-raw}). {@code maxWidth} (optional) shrinks the copy,
+     * keeping the aspect ratio: PixelCopy scales while copying, so small frames (GIF) cost less.
+     * Replies {@code null} when there is no frame.
+     */
+    void capture(String format, Integer maxWidth, MethodChannel.Result result) {
+        int w = videoWidth > 0 ? videoWidth : view.getWidth();
+        int h = videoHeight > 0 ? videoHeight : view.getHeight();
+        if (maxWidth != null && maxWidth > 0 && w > maxWidth) {
+            h = Math.max(1, Math.round((float) h * maxWidth / w));
+            w = maxWidth;
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N || wid == 0 || w <= 0 || h <= 0) {
+            result.success(null);
+            return;
+        }
+        final Bitmap bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        try {
+            PixelCopy.request(view, bitmap, code -> {
+                if (code != PixelCopy.SUCCESS) {
+                    bitmap.recycle();
+                    result.success(null);
+                    return;
+                }
+                new Thread(() -> {
+                    byte[] bytes = null;
+                    try {
+                        bytes = encode(bitmap, format);
+                    } catch (Throwable ignored) {
+                    } finally {
+                        bitmap.recycle();
+                    }
+                    final byte[] out = bytes;
+                    handler.post(() -> result.success(out));
+                }, "media_kit_capture").start();
+            }, handler);
+        } catch (IllegalArgumentException e) {
+            // The surface went away between the check and the request.
+            bitmap.recycle();
+            result.success(null);
+        }
+    }
+
+    private static byte[] encode(Bitmap bitmap, String format) {
+        if ("raw".equals(format)) {
+            final ByteBuffer buffer = ByteBuffer.allocate(bitmap.getByteCount());
+            bitmap.copyPixelsToBuffer(buffer);
+            final byte[] pixels = buffer.array();
+            // ARGB_8888 is RGBA in memory; mpv's raw screenshots are BGRA.
+            for (int i = 0; i + 3 < pixels.length; i += 4) {
+                final byte r = pixels[i];
+                pixels[i] = pixels[i + 2];
+                pixels[i + 2] = r;
+            }
+            return pixels;
+        }
+        final ByteArrayOutputStream stream = new ByteArrayOutputStream();
+        final boolean png = "png".equals(format);
+        bitmap.compress(png ? Bitmap.CompressFormat.PNG : Bitmap.CompressFormat.JPEG, png ? 100 : 92,
+                stream);
+        return stream.toByteArray();
     }
 
     @NonNull

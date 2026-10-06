@@ -74,6 +74,15 @@ public class MediaKitVideoPlugin implements FlutterPlugin, MethodCallHandler {
                 result.success(null);
                 break;
             }
+            case "SurfaceVideoView.Capture": {
+                final SurfaceVideoView view = SurfaceVideoView.views.get(call.<Integer>argument("viewId"));
+                if (view == null) {
+                    result.success(null);
+                } else {
+                    view.capture(call.argument("format"), call.<Integer>argument("maxWidth"), result);
+                }
+                break;
+            }
             case "SurfaceVideoView.SetVideoSize": {
                 final SurfaceVideoView view = SurfaceVideoView.views.get(call.<Integer>argument("viewId"));
                 if (view != null) {

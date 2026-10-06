@@ -339,10 +339,12 @@ class Player {
   /// this method behaves the same as [screenshot].
   Future<Uint8List?> safeScreenshot(
       {String? format = 'image/jpeg',
-      bool includeLibassSubtitles = false}) async {
+      bool includeLibassSubtitles = false,
+      int? maxWidth}) async {
     return platform?.safeScreenshot(
       format: format,
       includeLibassSubtitles: includeLibassSubtitles,
+      maxWidth: maxWidth,
     );
   }
 

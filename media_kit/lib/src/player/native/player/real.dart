@@ -1158,15 +1158,25 @@ class NativePlayer extends PlatformPlayer {
   /// Takes the snapshot of the current video frame & returns bytes that are
   /// safe to retain or transfer to another isolate.
   @override
+  /// Takes screenshots in place of mpv when frames never reach mpv's renderer
+  /// (Android surface mode: MediaCodec writes straight into a `SurfaceView`).
+  /// Set by the video output; `null` uses mpv. A `null` result falls back to mpv.
+  /// [maxWidth]: optional smaller width (keeps the aspect ratio).
+  Future<Uint8List?> Function(String? format, int? maxWidth)? frameCapture;
+
+  /// [maxWidth] is a hint for a smaller picture (e.g. GIF frames): honoured by
+  /// [frameCapture], ignored by mpv's own screenshots.
   Future<Uint8List?> safeScreenshot(
       {String? format = 'image/jpeg',
       bool synchronized = true,
-      bool includeLibassSubtitles = false}) async {
+      bool includeLibassSubtitles = false,
+      int? maxWidth}) async {
     return _screenshotWithOptions(
       format: format,
       synchronized: synchronized,
       includeLibassSubtitles: includeLibassSubtitles,
       safe: true,
+      maxWidth: maxWidth,
     );
   }
 
@@ -1175,6 +1185,7 @@ class NativePlayer extends PlatformPlayer {
     required bool synchronized,
     required bool includeLibassSubtitles,
     required bool safe,
+    int? maxWidth,
   }) async {
     Future<Uint8List?> function() async {
       if (![
@@ -1194,6 +1205,12 @@ class NativePlayer extends PlatformPlayer {
 
       await waitForPlayerInitialization;
       await waitForVideoControllerInitializationIfAttached;
+
+      final capture = frameCapture;
+      if (capture != null) {
+        final bytes = await capture(format, maxWidth);
+        if (bytes != null) return bytes;
+      }
 
       return compute(
         _screenshot,

@@ -135,6 +135,13 @@ abstract class PlatformVideoController {
   /// Requests dismissal of native picture-in-picture when currently active.
   Future<bool> exitPictureInPicture() async => false;
 
+  /// Whether decoded frames may go straight to the display without mpv's
+  /// renderer (Android surface mode: `vo=mediacodec_embed`, cheapest). Pass
+  /// `false` while mpv's shaders are wanted (scaling, deband, super
+  /// resolution): the video is then drawn by mpv into the same surface. No-op
+  /// where there is no such output.
+  Future<void> setDirectOutput(bool value) async {}
+
   /// [Completer] used to signal the decoding & rendering of the first video frame.
   /// Use [waitUntilFirstFrameRendered] to wait for the first frame to be rendered.
   @protected

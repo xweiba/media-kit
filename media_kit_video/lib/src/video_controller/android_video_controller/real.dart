@@ -60,6 +60,66 @@ class AndroidVideoController extends PlatformVideoController {
   /// The surface mpv renders into (surface mode).
   _Surface? _surface;
 
+  /// Surface mode: frames may go straight to the display ([setDirectOutput]).
+  bool _direct = true;
+
+  /// Surface mode: the hardware decoder refused the current file while frames
+  /// went straight to the display (e.g. 10-bit H.264): mpv decodes in software,
+  /// which `vo=mediacodec_embed` cannot show, so the file is drawn with
+  /// `vo=gpu`. Kept until another file loads or direct output is asked for
+  /// again (under `vo=gpu` mpv may decode in software for its own reasons, e.g.
+  /// no GPU import for 10-bit frames, which says nothing about direct output).
+  bool _softwareDecoding = false;
+
+  /// Surface mode: the video output in use.
+  String get _surfaceVo =>
+      _direct && !_softwareDecoding ? 'mediacodec_embed' : 'gpu';
+
+  @override
+  Future<void> setDirectOutput(bool value) async {
+    if (!surfaceMode || _direct == value) return;
+    _direct = value;
+    if (value) _softwareDecoding = false;
+    if ((wid.value ?? 0) != 0) await widListener();
+  }
+
+  /// Surface mode: confirms a software decoder before leaving direct output.
+  Timer? _softwareCheck;
+
+  /// Surface mode: `hwdec-current` changed (`no` = software decoding). Only
+  /// meaningful while frames go straight to the display. mpv reports `no`
+  /// for a moment while the decoder starts, so the answer counts only when it
+  /// is still `no` a little later with a video codec open.
+  Future<void> _onHwdec() async {
+    _softwareCheck?.cancel();
+    if (_surfaceVo != 'mediacodec_embed') return;
+    if (await _readProperty('hwdec-current') != 'no') return;
+    _softwareCheck = Timer(const Duration(milliseconds: 1500), () async {
+      if (_surfaceVo != 'mediacodec_embed') return;
+      if (await _readProperty('hwdec-current') != 'no') return;
+      if ((await _readProperty('video-codec')).isEmpty) return;
+      _softwareDecoding = true;
+      if ((wid.value ?? 0) != 0) await widListener();
+    });
+  }
+
+  Future<String> _readProperty(String name) async {
+    try {
+      return await platform.getProperty(name);
+    } catch (_) {
+      return '';
+    }
+  }
+
+  /// Surface mode: a new file may decode in hardware again.
+  Future<void> _onPath() async {
+    if (!_softwareDecoding) return;
+    _softwareDecoding = false;
+    if (_surfaceVo == 'mediacodec_embed' && (wid.value ?? 0) != 0) {
+      await widListener();
+    }
+  }
+
   void _onSurface(int viewId, int wid, int width, int height) {
     _surfaces.remove(viewId);
     if (wid != 0) _surfaces[viewId] = _Surface(wid, width, height);
@@ -73,6 +133,22 @@ class AndroidVideoController extends PlatformVideoController {
     } else if (sizeChanged && next != 0) {
       widListener();
     }
+  }
+
+  /// Surface mode: frames go from MediaCodec straight to the display and never
+  /// reach mpv's renderer, so mpv cannot take a screenshot. Copies the pixels
+  /// of the surface showing the video (`PixelCopy`, at the video size) instead.
+  Future<Uint8List?> _capture(String? format, int? maxWidth) async {
+    if (_surfaces.isEmpty) return null;
+    return _channel.invokeMethod<Uint8List>('SurfaceVideoView.Capture', {
+      'viewId': _surfaces.keys.last,
+      'maxWidth': maxWidth,
+      'format': format == null
+          ? 'raw'
+          : format == 'image/png'
+              ? 'png'
+              : 'jpeg',
+    });
   }
 
   /// Surface mode: tells the native view [viewId] the video size and fit; it
@@ -100,7 +176,11 @@ class AndroidVideoController extends PlatformVideoController {
       final androidSurfaceSizeValue = [width, height].join('x');
       final widValue = wid.value?.toString() ?? '0';
       // When --wid is 0, vo=null is required to avoid SIGSEGV.
-      final voValue = widValue == '0' ? 'null' : configuration.vo!;
+      final voValue = widValue == '0'
+          ? 'null'
+          : surfaceMode
+              ? _surfaceVo
+              : configuration.vo!;
       final vidValue = widValue == '0' ? 'no' : 'auto';
       // It is important to re-initialize --vo after --android-surface-size.
       await setProperty('vo', 'null');
@@ -117,7 +197,7 @@ class AndroidVideoController extends PlatformVideoController {
       // Toggle through `no`: if the track is already `auto` (media opened before
       // this surface, or moving to another surface) setting `auto` again is a
       // no-op and the decoder stays bound to the old output.
-      if (configuration.vo == 'mediacodec_embed') {
+      if (voValue == 'mediacodec_embed') {
         await setProperty('vid', 'no');
         await setProperty('vid', vidValue);
       }
@@ -254,6 +334,20 @@ class AndroidVideoController extends PlatformVideoController {
     // Store the [VideoController] in the [_controllers].
     _controllers[handle] = controller;
 
+    if (configuration.androidSurfaceView) {
+      controller.platform.frameCapture = controller._capture;
+      await controller.platform.observeProperty(
+        'hwdec-current',
+        (_) => controller._onHwdec(),
+        waitForInitialization: false,
+      );
+      await controller.platform.observeProperty(
+        'path',
+        (_) => controller._onPath(),
+        waitForInitialization: false,
+      );
+    }
+
     if (!configuration.androidSurfaceView) {
       await _channel.invokeMethod(
         'VideoOutputManager.Create',
@@ -305,9 +399,13 @@ class AndroidVideoController extends PlatformVideoController {
     wid.dispose();
     wid.removeListener(widListener);
     await videoParamsSubscription?.cancel();
+    _softwareCheck?.cancel();
     final handle = await player.handle;
     _controllers.remove(handle);
-    if (surfaceMode) return;
+    if (surfaceMode) {
+      if (platform.frameCapture == _capture) platform.frameCapture = null;
+      return;
+    }
     await _channel.invokeMethod(
       'VideoOutputManager.Dispose',
       {

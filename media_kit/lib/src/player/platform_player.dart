@@ -297,7 +297,8 @@ abstract class PlatformPlayer {
 
   Future<Uint8List?> safeScreenshot(
       {String? format = 'image/jpeg',
-      bool includeLibassSubtitles = false}) async {
+      bool includeLibassSubtitles = false,
+      int? maxWidth}) async {
     throw UnimplementedError(
       '[PlatformPlayer.safeScreenshot] is not implemented',
     );
