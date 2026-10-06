@@ -69,6 +69,12 @@ class PictureInPictureSeekEvent {
 ///
 /// {@endtemplate}
 abstract class PlatformVideoController {
+  /// Number of native video views (Android surface mode) currently on screen.
+  /// Flutter cannot read their pixels: backdrop effects (blur, refraction)
+  /// drawn over them see nothing, so hosts may switch such surfaces to an
+  /// opaque look while this is above zero.
+  static final ValueNotifier<int> nativeVideoViews = ValueNotifier<int>(0);
+
   /// The [Player] instance associated with this instance.
   final Player player;
 

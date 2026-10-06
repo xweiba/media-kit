@@ -547,6 +547,7 @@ class _AndroidSurfaceVideoState extends State<_AndroidSurfaceVideo> {
   void initState() {
     super.initState();
     widget.controller.rect.addListener(_sendSize);
+    PlatformVideoController.nativeVideoViews.value++;
   }
 
   @override
@@ -565,6 +566,7 @@ class _AndroidSurfaceVideoState extends State<_AndroidSurfaceVideo> {
   @override
   void dispose() {
     widget.controller.rect.removeListener(_sendSize);
+    PlatformVideoController.nativeVideoViews.value--;
     super.dispose();
   }
 
