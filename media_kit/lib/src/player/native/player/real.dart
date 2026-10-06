@@ -2470,7 +2470,16 @@ class NativePlayer extends PlatformPlayer {
         'linear-downscaling': 'no',
         'sigmoid-upscaling': 'no',
         'hdr-compute-peak': 'no',
-        if (AndroidHelper.isPhysicalDevice || AndroidHelper.APILevel > 25)
+        // AAudio 省电模式：系统把音轨放到 deep buffer 输出（HAL 约 40ms 一次），
+        // 而 OpenSL ES 默认低延迟，落在 FAST 主输出上每 4ms 唤醒一次音频 HAL
+        // （真机实测音频服务 + HAL ~44% CPU，官方抖音 deep buffer ~10%）。
+        // 播放器不需要低延迟；AAudio 打不开时 mpv 按列表回退到 OpenSL ES。
+        // API 26 的 AAudio 问题较多（Oboe 也在 27 起才用），从 27 开始。
+        if (AndroidHelper.APILevel >= 27) ...{
+          'ao': 'aaudio,opensles',
+          'aaudio-performance-mode': 'power-saving',
+        } else if (AndroidHelper.isPhysicalDevice ||
+            AndroidHelper.APILevel > 25)
           'ao': 'opensles'
         // Disable audio output on older Android emulators with API Level < 25.
         // OpenSL ES audio output seems to be broken on some of these.
