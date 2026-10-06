@@ -96,6 +96,10 @@ public class MediaKitVideoPlugin implements FlutterPlugin, MethodCallHandler {
                 result.success(android.os.Build.VERSION.SDK_INT);
                 break;
             }
+            case "Utils.HardwareDecoderSupports": {
+                result.success(Utils.hardwareDecoderSupports(call.argument("codec"), call.argument("profile"), call.argument("pixelFormat")));
+                break;
+            }
             case "Utils.IsEmulator": {
                 result.success(Utils.isEmulator());
                 break;

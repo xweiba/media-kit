@@ -2167,7 +2167,12 @@ class NativePlayer extends PlatformPlayer {
               }
             }
           }
-          if (prefix == 'vd') {
+          // `Could not open codec.` is logged for every decoding method that
+          // fails to start (e.g. MediaCodec refusing 10-bit H.264); mpv then
+          // tries the next one (software). A decoder that cannot be opened at
+          // all is reported separately as `Failed to initialize a decoder for
+          // codec '...'.`, so only that one is an error here.
+          if (prefix == 'vd' && text != 'Could not open codec.') {
             if (!errorController.isClosed) {
               errorController.add(text);
             }

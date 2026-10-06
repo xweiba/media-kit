@@ -71,9 +71,46 @@ class AndroidVideoController extends PlatformVideoController {
   /// no GPU import for 10-bit frames, which says nothing about direct output).
   bool _softwareDecoding = false;
 
+  /// Surface mode: no hardware decoder takes the selected video track
+  /// (checked with `MediaCodecList` before frames go anywhere: switching an
+  /// already software-decoding stream to `vo=mediacodec_embed` stalls mpv).
+  bool _hardwareUnsupported = false;
+
   /// Surface mode: the video output in use.
   String get _surfaceVo =>
-      _direct && !_softwareDecoding ? 'mediacodec_embed' : 'gpu';
+      _direct && !_softwareDecoding && !_hardwareUnsupported
+          ? 'mediacodec_embed'
+          : 'gpu';
+
+  /// Surface mode: the selected video track or its decoded format changed;
+  /// checks whether a hardware decoder can take it. Before the surface
+  /// arrives mpv decodes a few frames in software, so the pixel format (bit
+  /// depth, chroma) is known before frames go anywhere; mpv often leaves the
+  /// track's profile empty.
+  Future<void> _onVideoTrack() async {
+    final codec = await _readProperty('current-tracks/video/codec');
+    if (codec.isEmpty) return;
+    final profile = await _readProperty('current-tracks/video/codec-profile');
+    final pixelFormat = await _readProperty('video-params/pixelformat');
+    bool supported;
+    try {
+      supported = await _channel.invokeMethod<bool>(
+            'Utils.HardwareDecoderSupports',
+            {
+              'codec': codec,
+              'profile': profile.isEmpty ? null : profile,
+              'pixelFormat': pixelFormat.isEmpty ? null : pixelFormat,
+            },
+          ) ??
+          true;
+    } catch (_) {
+      supported = true;
+    }
+    if (_hardwareUnsupported == !supported) return;
+    final before = _surfaceVo;
+    _hardwareUnsupported = !supported;
+    if (_surfaceVo != before && (wid.value ?? 0) != 0) await widListener();
+  }
 
   @override
   Future<void> setDirectOutput(bool value) async {
@@ -88,16 +125,18 @@ class AndroidVideoController extends PlatformVideoController {
 
   /// Surface mode: `hwdec-current` changed (`no` = software decoding). Only
   /// meaningful while frames go straight to the display. mpv reports `no`
-  /// for a moment while the decoder starts, so the answer counts only when it
-  /// is still `no` a little later with a video codec open.
+  /// for a moment while the decoder starts, so the answer counts only when the
+  /// hardware decoder is still not in use a little later while a video track
+  /// is selected (software frames the display path cannot take make mpv
+  /// re-create the decoder over and over, so `video-codec` comes and goes).
   Future<void> _onHwdec() async {
     _softwareCheck?.cancel();
     if (_surfaceVo != 'mediacodec_embed') return;
     if (await _readProperty('hwdec-current') != 'no') return;
     _softwareCheck = Timer(const Duration(milliseconds: 1500), () async {
       if (_surfaceVo != 'mediacodec_embed') return;
-      if (await _readProperty('hwdec-current') != 'no') return;
-      if ((await _readProperty('video-codec')).isEmpty) return;
+      if (await _readProperty('hwdec-current') == 'mediacodec') return;
+      if ((await _readProperty('current-tracks/video/codec')).isEmpty) return;
       _softwareDecoding = true;
       if ((wid.value ?? 0) != 0) await widListener();
     });
@@ -344,6 +383,16 @@ class AndroidVideoController extends PlatformVideoController {
       await controller.platform.observeProperty(
         'path',
         (_) => controller._onPath(),
+        waitForInitialization: false,
+      );
+      await controller.platform.observeProperty(
+        'current-tracks/video/codec',
+        (_) => controller._onVideoTrack(),
+        waitForInitialization: false,
+      );
+      await controller.platform.observeProperty(
+        'video-params/pixelformat',
+        (_) => controller._onVideoTrack(),
         waitForInitialization: false,
       );
     }
