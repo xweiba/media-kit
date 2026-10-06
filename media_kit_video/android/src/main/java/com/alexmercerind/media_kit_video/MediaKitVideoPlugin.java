@@ -30,6 +30,9 @@ public class MediaKitVideoPlugin implements FlutterPlugin, MethodCallHandler {
         channel.setMethodCallHandler(this);
 
         videoOutputManager = new VideoOutputManager(flutterPluginBinding.getTextureRegistry());
+        // Android surface mode: a native SurfaceView platform view mpv renders into.
+        flutterPluginBinding.getPlatformViewRegistry().registerViewFactory(
+                SurfaceVideoView.VIEW_TYPE, new SurfaceVideoView.Factory(channel));
 
     }
 
@@ -69,6 +72,19 @@ public class MediaKitVideoPlugin implements FlutterPlugin, MethodCallHandler {
                 final long handle = Long.parseLong(call.argument("handle"));
                 videoOutputManager.dispose(handle);
                 result.success(null);
+                break;
+            }
+            case "SurfaceVideoView.SetVideoSize": {
+                final SurfaceVideoView view = SurfaceVideoView.views.get(call.<Integer>argument("viewId"));
+                if (view != null) {
+                    view.setVideoSize(call.<Integer>argument("width"), call.<Integer>argument("height"),
+                            Boolean.TRUE.equals(call.<Boolean>argument("cover")));
+                }
+                result.success(null);
+                break;
+            }
+            case "Utils.SdkInt": {
+                result.success(android.os.Build.VERSION.SDK_INT);
                 break;
             }
             case "Utils.IsEmulator": {

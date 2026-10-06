@@ -182,7 +182,7 @@ public class VideoOutput implements TextureRegistry.SurfaceProducer.Callback {
         }
     }
 
-    private static long newGlobalObjectRef(Object object) {
+    static long newGlobalObjectRef(Object object) {
         Log.i(TAG, String.format(Locale.ENGLISH, "newGlobalRef: object = %s", object));
         try {
             return (long) Objects.requireNonNull(newGlobalObjectRef.invoke(null, object));
@@ -192,7 +192,7 @@ public class VideoOutput implements TextureRegistry.SurfaceProducer.Callback {
         }
     }
 
-    private static void deleteGlobalObjectRef(long ref) {
+    static void deleteGlobalObjectRef(long ref) {
         if (deletedGlobalObjectRefs.contains(ref)) {
             Log.i(TAG, String.format(Locale.ENGLISH, "deleteGlobalObjectRef: ref = %d ALREADY DELETED", ref));
             return;

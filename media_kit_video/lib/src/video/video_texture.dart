@@ -6,6 +6,9 @@
 import 'dart:io';
 import 'dart:async';
 import 'package:flutter/widgets.dart';
+import 'package:flutter/rendering.dart';
+import 'package:media_kit_video/src/video_controller/platform_video_controller.dart';
+import 'package:media_kit_video/src/video_controller/android_video_controller/android_video_controller.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit_video/media_kit_video_controls/media_kit_video_controls.dart';
 
@@ -365,7 +368,17 @@ class VideoState extends State<Video> with WidgetsBindingObserver {
             child: Stack(
               fit: StackFit.expand,
               children: [
-                ClipRect(
+                // Android surface mode: a native SurfaceView instead of a texture.
+                ValueListenableBuilder<PlatformVideoController?>(
+                  valueListenable: widget.controller.notifier,
+                  builder: (context, platform, texture) =>
+                      platform is AndroidVideoController && platform.surfaceMode
+                          ? _AndroidSurfaceVideo(
+                              controller: platform,
+                              parameters: videoViewParameters,
+                            )
+                          : texture!,
+                  child: ClipRect(
                   child: FittedBox(
                     fit: videoViewParameters.fit,
                     alignment: videoViewParameters.alignment,
@@ -415,6 +428,7 @@ class VideoState extends State<Video> with WidgetsBindingObserver {
                       ),
                     ),
                   ),
+                ),
                 ),
                 if (videoViewParameters.subtitleViewConfiguration.visible &&
                     !(widget.controller.player.platform?.configuration.libass ??
@@ -507,3 +521,96 @@ Future<void> defaultExitNativeFullscreen() async {
   }
 }
 // --------------------------------------------------
+
+/// Android surface mode: the video in a native `SurfaceView` platform view
+/// filling the area. mpv renders into it through `--wid`. The native side
+/// sizes and centres the surface from the video size and [BoxFit] sent here
+/// (a hybrid-composition platform view keeps the size it was created with and
+/// cannot be resized from Dart), so a new size never needs a new view.
+class _AndroidSurfaceVideo extends StatefulWidget {
+  const _AndroidSurfaceVideo({
+    required this.controller,
+    required this.parameters,
+  });
+
+  final AndroidVideoController controller;
+  final VideoViewParameters parameters;
+
+  @override
+  State<_AndroidSurfaceVideo> createState() => _AndroidSurfaceVideoState();
+}
+
+class _AndroidSurfaceVideoState extends State<_AndroidSurfaceVideo> {
+  int? _viewId;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.rect.addListener(_sendSize);
+  }
+
+  @override
+  void didUpdateWidget(_AndroidSurfaceVideo old) {
+    super.didUpdateWidget(old);
+    if (!identical(old.controller, widget.controller)) {
+      old.controller.rect.removeListener(_sendSize);
+      widget.controller.rect.addListener(_sendSize);
+    }
+    if (old.parameters.fit != widget.parameters.fit ||
+        old.parameters.aspectRatio != widget.parameters.aspectRatio) {
+      _sendSize();
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.controller.rect.removeListener(_sendSize);
+    super.dispose();
+  }
+
+  void _sendSize() {
+    final viewId = _viewId;
+    final rect = widget.controller.rect.value;
+    if (viewId == null || rect == null || rect.width <= 1 || rect.height <= 1) {
+      return;
+    }
+    final aspect = widget.parameters.aspectRatio;
+    AndroidVideoController.setSurfaceVideoSize(
+      viewId,
+      width: (aspect == null ? rect.width : rect.height * aspect).round(),
+      height: rect.height.round(),
+      cover: widget.parameters.fit == BoxFit.cover,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) => FutureBuilder<int>(
+        future: widget.controller.player.handle,
+        builder: (context, handle) => !handle.hasData
+            ? const SizedBox.shrink()
+            : PlatformViewLink(
+                viewType: _surfaceViewType,
+                surfaceFactory: (context, view) => AndroidViewSurface(
+                  controller: view as AndroidViewController,
+                  gestureRecognizers: const {},
+                  hitTestBehavior: PlatformViewHitTestBehavior.transparent,
+                ),
+                onCreatePlatformView: (params) =>
+                    PlatformViewsService.initSurfaceAndroidView(
+                  id: params.id,
+                  viewType: _surfaceViewType,
+                  layoutDirection: TextDirection.ltr,
+                  creationParams: '${handle.data}',
+                  creationParamsCodec: const StandardMessageCodec(),
+                )
+                      ..addOnPlatformViewCreatedListener((id) {
+                        params.onPlatformViewCreated(id);
+                        _viewId = id;
+                        _sendSize();
+                      })
+                      ..create(),
+              ),
+      );
+}
+
+const _surfaceViewType = 'com.alexmercerind/media_kit_video/surface';

@@ -47,11 +47,56 @@ class AndroidVideoController extends PlatformVideoController {
     }
   }
 
+  /// Surface mode ([VideoControllerConfiguration.androidSurfaceView]): mpv
+  /// renders into a native `SurfaceView` placed by [Video] instead of a texture.
+  bool get surfaceMode => configuration.androidSurfaceView;
+
+  /// Surface mode: the `SurfaceView`s currently on screen (platform view id →
+  /// surface reference and pixel size), oldest first. The newest one (a
+  /// fullscreen page over a feed) gets mpv's output; when it goes away the
+  /// output returns to the one below.
+  final _surfaces = <int, _Surface>{};
+
+  /// The surface mpv renders into (surface mode).
+  _Surface? _surface;
+
+  void _onSurface(int viewId, int wid, int width, int height) {
+    _surfaces.remove(viewId);
+    if (wid != 0) _surfaces[viewId] = _Surface(wid, width, height);
+    final top = _surfaces.isEmpty ? null : _surfaces.values.last;
+    final sizeChanged = top?.width != _surface?.width ||
+        top?.height != _surface?.height;
+    _surface = top;
+    final next = top?.wid ?? 0;
+    if (this.wid.value != next) {
+      this.wid.value = next;
+    } else if (sizeChanged && next != 0) {
+      widListener();
+    }
+  }
+
+  /// Surface mode: tells the native view [viewId] the video size and fit; it
+  /// sizes and centres its `SurfaceView` itself (a hybrid-composition platform
+  /// view cannot be resized from Dart).
+  static Future<void> setSurfaceVideoSize(
+    int viewId, {
+    required int width,
+    required int height,
+    required bool cover,
+  }) =>
+      _channel.invokeMethod('SurfaceVideoView.SetVideoSize', {
+        'viewId': viewId,
+        'width': width,
+        'height': height,
+        'cover': cover,
+      });
+
   /// Listener for updating the --wid property.
   Future<void> widListener() {
     return lock.synchronized(() async {
-      final width = rect.value?.width.toInt() ?? 1;
-      final height = rect.value?.height.toInt() ?? 1;
+      final surface = surfaceMode ? _surface : null;
+      final width = surface?.width ?? rect.value?.width.toInt() ?? 1;
+      final height = surface?.height ?? rect.value?.height.toInt() ?? 1;
       final androidSurfaceSizeValue = [width, height].join('x');
       final widValue = wid.value?.toString() ?? '0';
       // When --wid is 0, vo=null is required to avoid SIGSEGV.
@@ -65,11 +110,17 @@ class AndroidVideoController extends PlatformVideoController {
           'android-surface-size': androidSurfaceSizeValue,
           'wid': widValue,
           'vo': voValue,
-          // It is important to re-initialize --vid in-case of --vo=mediacodec_embed.
-          // Not doing so causes error "Could not open codec." & video never gets rendered.
-          if (configuration.vo == 'mediacodec_embed') 'vid': vidValue,
         },
       );
+      // It is important to re-initialize --vid in-case of --vo=mediacodec_embed.
+      // Not doing so causes error "Could not open codec." & video never gets rendered.
+      // Toggle through `no`: if the track is already `auto` (media opened before
+      // this surface, or moving to another surface) setting `auto` again is a
+      // no-op and the decoder stays bound to the old output.
+      if (configuration.vo == 'mediacodec_embed') {
+        await setProperty('vid', 'no');
+        await setProperty('vid', vidValue);
+      }
       // Instead of seeking to the start (Duration.zero), seek to the current playback position
       // without jumping the user to the start of the media.
       final currentPosition = player.state.position;
@@ -108,14 +159,18 @@ class AndroidVideoController extends PlatformVideoController {
 
         final handle = await player.handle;
 
-        await _channel.invokeMethod(
-          'VideoOutputManager.SetSurfaceSize',
-          {
-            'handle': handle.toString(),
-            'width': width.toString(),
-            'height': height.toString(),
-          },
-        );
+        // Surface mode has no texture to resize: the SurfaceView is sized by
+        // its layout and reports its own size.
+        if (!surfaceMode) {
+          await _channel.invokeMethod(
+            'VideoOutputManager.SetSurfaceSize',
+            {
+              'handle': handle.toString(),
+              'width': width.toString(),
+              'height': height.toString(),
+            },
+          );
+        }
 
         rect.value = Rect.fromLTWH(
           0.0,
@@ -148,10 +203,23 @@ class AndroidVideoController extends PlatformVideoController {
       return hw ? 'auto-safe' : 'no';
     }
 
+    // Surface mode needs the hardware decoder writing into the surface; on
+    // an emulator (software decoding) fall back to the texture path. Below
+    // Android 10 hybrid-composition platform views copy every Flutter frame
+    // (Flutter documents the cost), so those keep the texture path too.
+    if (configuration.androidSurfaceView &&
+        (await _channel.invokeMethod('Utils.IsEmulator') == true ||
+            ((await _channel.invokeMethod<int>('Utils.SdkInt')) ?? 0) < 29)) {
+      configuration = configuration.copyWith(androidSurfaceView: false);
+    }
     // Update [configuration] to have default values.
     configuration = configuration.copyWith(
-      vo: configuration.vo ?? 'gpu',
-      hwdec: configuration.hwdec ?? await getDefaultHwdec(),
+      vo: configuration.vo ??
+          (configuration.androidSurfaceView ? 'mediacodec_embed' : 'gpu'),
+      hwdec: configuration.hwdec ??
+          (configuration.androidSurfaceView
+              ? 'mediacodec'
+              : await getDefaultHwdec()),
     );
 
     // Retrieve the native handle of the [Player].
@@ -186,13 +254,15 @@ class AndroidVideoController extends PlatformVideoController {
     // Store the [VideoController] in the [_controllers].
     _controllers[handle] = controller;
 
-    await _channel.invokeMethod(
-      'VideoOutputManager.Create',
-      {
-        'handle': handle.toString(),
-        'enableSurfaceProducer': configuration.enableAndroidSurfaceProducer,
-      },
-    );
+    if (!configuration.androidSurfaceView) {
+      await _channel.invokeMethod(
+        'VideoOutputManager.Create',
+        {
+          'handle': handle.toString(),
+          'enableSurfaceProducer': configuration.enableAndroidSurfaceProducer,
+        },
+      );
+    }
 
     await controller.setProperties(
       {
@@ -237,6 +307,7 @@ class AndroidVideoController extends PlatformVideoController {
     await videoParamsSubscription?.cancel();
     final handle = await player.handle;
     _controllers.remove(handle);
+    if (surfaceMode) return;
     await _channel.invokeMethod(
       'VideoOutputManager.Dispose',
       {
@@ -274,6 +345,18 @@ class AndroidVideoController extends PlatformVideoController {
                     _controllers[handle]?.wid.value = wid;
                     break;
                   }
+                case 'SurfaceVideoView.Surface':
+                  {
+                    final int handle =
+                        int.parse(call.arguments['handle'] as String);
+                    _controllers[handle]?._onSurface(
+                      call.arguments['viewId'] as int,
+                      call.arguments['wid'] as int,
+                      call.arguments['width'] as int,
+                      call.arguments['height'] as int,
+                    );
+                    break;
+                  }
                 case 'VideoOutput.WaitUntilFirstFrameRenderedNotify':
                   {
                     // Notify about updated texture ID & [Rect].
@@ -298,4 +381,15 @@ class AndroidVideoController extends PlatformVideoController {
             }
           },
         );
+}
+
+/// A `SurfaceView` reported by the platform view (surface mode).
+class _Surface {
+  const _Surface(this.wid, this.width, this.height);
+
+  /// JNI global reference to its `android.view.Surface`.
+  final int wid;
+
+  /// Pixel size.
+  final int width, height;
 }

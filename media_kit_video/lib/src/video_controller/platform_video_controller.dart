@@ -213,6 +213,16 @@ class VideoControllerConfiguration {
   /// * [vo] != gpu : `false`
   final bool? androidAttachSurfaceAfterVideoParameters;
 
+  /// Android only: render into a native `SurfaceView` (a platform view placed
+  /// by [Video]) instead of a Flutter texture. Decoded frames go straight from
+  /// MediaCodec to the surface (`vo=mediacodec_embed`, `hwdec=mediacodec`) and
+  /// the display hardware composes them, without the GPU drawing every frame
+  /// twice (mpv into the texture, then Flutter onto the screen). mpv-side
+  /// screenshots, filters and shaders are unavailable in this mode.
+  ///
+  /// Default: `false`
+  final bool androidSurfaceView;
+
   /// {@macro video_controller_configuration}
   const VideoControllerConfiguration({
     this.vo,
@@ -223,6 +233,7 @@ class VideoControllerConfiguration {
     this.enableHardwareAcceleration = true,
     this.enableAndroidSurfaceProducer = true,
     this.androidAttachSurfaceAfterVideoParameters,
+    this.androidSurfaceView = false,
   });
 
   /// Returns a copy of this class with the given fields replaced by the new values.
@@ -235,6 +246,7 @@ class VideoControllerConfiguration {
     bool? enableHardwareAcceleration,
     bool? enableAndroidSurfaceProducer,
     bool? androidAttachSurfaceAfterVideoParameters,
+    bool? androidSurfaceView,
   }) =>
       VideoControllerConfiguration(
         vo: vo ?? this.vo,
@@ -249,5 +261,6 @@ class VideoControllerConfiguration {
         androidAttachSurfaceAfterVideoParameters:
             androidAttachSurfaceAfterVideoParameters ??
                 this.androidAttachSurfaceAfterVideoParameters,
+        androidSurfaceView: androidSurfaceView ?? this.androidSurfaceView,
       );
 }
