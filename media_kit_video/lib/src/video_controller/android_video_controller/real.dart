@@ -92,9 +92,34 @@ class AndroidVideoController extends PlatformVideoController {
     if (codec.isEmpty) return;
     final profile = await _readProperty('current-tracks/video/codec-profile');
     final pixelFormat = await _readProperty('video-params/pixelformat');
+    // Live streams report the same format again on every output reconfig:
+    // look each combination up once.
+    final key = '$codec|$profile|$pixelFormat';
+    if (key == _checkedTrack) return;
+    _checkedTrack = key;
     bool supported;
+    if (pixelFormat.startsWith('mediacodec')) {
+      // Frames already come from the hardware decoder.
+      supported = true;
+    } else {
+      supported = await _hardwareDecoderSupports(codec, profile, pixelFormat);
+    }
+    if (_hardwareUnsupported == !supported) return;
+    final before = _surfaceVo;
+    _hardwareUnsupported = !supported;
+    if (_surfaceVo != before && (wid.value ?? 0) != 0) await widListener();
+  }
+
+  /// Last combination [_onVideoTrack] looked up (codec|profile|pixelformat).
+  String? _checkedTrack;
+
+  Future<bool> _hardwareDecoderSupports(
+    String codec,
+    String profile,
+    String pixelFormat,
+  ) async {
     try {
-      supported = await _channel.invokeMethod<bool>(
+      return await _channel.invokeMethod<bool>(
             'Utils.HardwareDecoderSupports',
             {
               'codec': codec,
@@ -104,12 +129,8 @@ class AndroidVideoController extends PlatformVideoController {
           ) ??
           true;
     } catch (_) {
-      supported = true;
+      return true;
     }
-    if (_hardwareUnsupported == !supported) return;
-    final before = _surfaceVo;
-    _hardwareUnsupported = !supported;
-    if (_surfaceVo != before && (wid.value ?? 0) != 0) await widListener();
   }
 
   @override
@@ -120,26 +141,18 @@ class AndroidVideoController extends PlatformVideoController {
     if ((wid.value ?? 0) != 0) await widListener();
   }
 
-  /// Surface mode: confirms a software decoder before leaving direct output.
-  Timer? _softwareCheck;
+  /// Surface mode: mpv's log while frames go straight to the display. When
+  /// the hardware decoder cannot take the stream after all (the capability
+  /// check passed), mpv decodes in software and then reports that the direct
+  /// output cannot show those frames — definitive, unlike `hwdec-current`,
+  /// which also reads `no` while a slow stream is still starting.
+  StreamSubscription<PlayerLog>? _logSubscription;
 
-  /// Surface mode: `hwdec-current` changed (`no` = software decoding). Only
-  /// meaningful while frames go straight to the display. mpv reports `no`
-  /// for a moment while the decoder starts, so the answer counts only when the
-  /// hardware decoder is still not in use a little later while a video track
-  /// is selected (software frames the display path cannot take make mpv
-  /// re-create the decoder over and over, so `video-codec` comes and goes).
-  Future<void> _onHwdec() async {
-    _softwareCheck?.cancel();
-    if (_surfaceVo != 'mediacodec_embed') return;
-    if (await _readProperty('hwdec-current') != 'no') return;
-    _softwareCheck = Timer(const Duration(milliseconds: 1500), () async {
-      if (_surfaceVo != 'mediacodec_embed') return;
-      if (await _readProperty('hwdec-current') == 'mediacodec') return;
-      if ((await _readProperty('current-tracks/video/codec')).isEmpty) return;
-      _softwareDecoding = true;
-      if ((wid.value ?? 0) != 0) await widListener();
-    });
+  void _onLog(PlayerLog log) {
+    if (_softwareDecoding || _surfaceVo != 'mediacodec_embed') return;
+    if (!log.text.startsWith('Cannot convert decoder/filter output')) return;
+    _softwareDecoding = true;
+    if ((wid.value ?? 0) != 0) unawaited(widListener());
   }
 
   Future<String> _readProperty(String name) async {
@@ -375,11 +388,7 @@ class AndroidVideoController extends PlatformVideoController {
 
     if (configuration.androidSurfaceView) {
       controller.platform.frameCapture = controller._capture;
-      await controller.platform.observeProperty(
-        'hwdec-current',
-        (_) => controller._onHwdec(),
-        waitForInitialization: false,
-      );
+      controller._logSubscription = player.stream.log.listen(controller._onLog);
       await controller.platform.observeProperty(
         'path',
         (_) => controller._onPath(),
@@ -448,7 +457,7 @@ class AndroidVideoController extends PlatformVideoController {
     wid.dispose();
     wid.removeListener(widListener);
     await videoParamsSubscription?.cancel();
-    _softwareCheck?.cancel();
+    await _logSubscription?.cancel();
     final handle = await player.handle;
     _controllers.remove(handle);
     if (surfaceMode) {
