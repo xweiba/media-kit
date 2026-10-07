@@ -249,6 +249,15 @@ class AndroidVideoController extends PlatformVideoController {
       // Toggle through `no`: if the track is already `auto` (media opened before
       // this surface, or moving to another surface) setting `auto` again is a
       // no-op and the decoder stays bound to the old output.
+      //
+      // Only once the media is open (real video tracks listed): toggling the
+      // track or seeking while mpv is still opening the stream races its
+      // opener thread — the seek fails (-12) and libmpv aborts a moment later
+      // in cancel_destroy (assertion "!c->slaves.head"). A stream that is
+      // still opening picks up the new --wid/--vo by itself.
+      final opened = player.state.tracks.video
+          .any((track) => track.id != 'auto' && track.id != 'no');
+      if (!opened) return;
       if (voValue == 'mediacodec_embed') {
         await setProperty('vid', 'no');
         await setProperty('vid', vidValue);
@@ -256,7 +265,11 @@ class AndroidVideoController extends PlatformVideoController {
       // Instead of seeking to the start (Duration.zero), seek to the current playback position
       // without jumping the user to the start of the media.
       final currentPosition = player.state.position;
-      await player.seek(currentPosition);
+      try {
+        await player.seek(currentPosition);
+      } catch (_) {
+        // Unseekable (live, still buffering): the output is rebound anyway.
+      }
     });
   }
 
