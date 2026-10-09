@@ -28,11 +28,22 @@ public class MediaKitVideoPlugin: NSObject, FlutterPlugin {
       utils: utils
     )
     registrar.addMethodCallDelegate(instance, channel: channel)
+    #if os(iOS)
+      // iOS 原生直出视图（AVSampleBufferDisplayLayer），见 NativeVideoView.swift。
+      let factory = NativeVideoViewFactory(channel: channel) { [weak instance] handle, sink in
+        instance?.setNativeSink(handle: handle, sink: sink)
+      }
+      instance.nativeViews = factory
+      registrar.register(factory, withId: NativeVideoViewFactory.viewType)
+    #endif
   }
 
   private let channel: FlutterMethodChannel
   private let videoOutputManager: VideoOutputManager
   private let utils: UtilsProtocol?
+  #if os(iOS)
+    var nativeViews: NativeVideoViewFactory?
+  #endif
 
   init(
     registry: FlutterTextureRegistry,
@@ -84,10 +95,19 @@ public class MediaKitVideoPlugin: NSObject, FlutterPlugin {
     self.utils = utils
   }
 
+  #if os(iOS)
+    fileprivate func setNativeSink(handle: Int64, sink: AnyObject?) {
+      videoOutputManager.setNativeSink(handle: handle, sink: sink)
+    }
+  #endif
+
   public func handle(
     _ call: FlutterMethodCall,
     result: @escaping FlutterResult
   ) {
+    #if os(iOS)
+      if nativeViews?.handle(call, result: result) == true { return }
+    #endif
     switch call.method {
     case "VideoOutputManager.Create":
       handleCreateMethodCall(call.arguments, result)

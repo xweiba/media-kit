@@ -3,6 +3,7 @@
 /// Copyright © 2021 & onwards, Hitesh Kumar Saini <saini123hitesh@gmail.com>.
 /// All rights reserved.
 /// Use of this source code is governed by MIT license that can be found in the LICENSE file.
+import 'package:flutter/foundation.dart';
 import 'package:media_kit/media_kit.dart';
 
 import 'package:media_kit_video/src/video_controller/platform_video_controller.dart';
@@ -25,4 +26,10 @@ class NativeVideoController extends PlatformVideoController {
 
   @override
   Future<void> setSize({int? width, int? height}) => throw UnimplementedError();
+
+  final ValueNotifier<bool> nativeView = ValueNotifier<bool>(false);
+
+  static Future<void> setNativeViewFit(int viewId, String fit) async {}
+
+  Future<void> disposeNativeView(int viewId) async {}
 }

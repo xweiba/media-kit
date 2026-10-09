@@ -147,6 +147,105 @@ class NativeVideoController extends PlatformVideoController {
   /// [StreamSubscription] for listening to video [Rect].
   StreamSubscription<VideoParams>? videoParamsSubscription;
 
+  /// iOS 原生直出（`vo=avfoundation_embed`，画面进 AVSampleBufferDisplayLayer，
+  /// 见 NativeVideoView.swift）：为 true 时 Video 显示原生视图，否则显示纹理。
+  /// 没有开关：能直出就直出，不能就自动降级到纹理。
+  final ValueNotifier<bool> nativeView = ValueNotifier<bool>(false);
+
+  /// 本进程的 libmpv 不能直出（没有该输出模块或初始化失败）：之后都用纹理。
+  static bool _nativeUnsupported = false;
+
+  /// 画质增强、超分都关（[setDirectOutput]）：mpv 不用自己画画面。
+  bool _direct = true;
+
+  /// mpv 当前直出到的层地址（`--wid`）；null 为纹理方式。层每个播放器一个，
+  /// 视图换来换去（全屏 ↔ 小窗 ↔ 画中画）地址不变，不用重切输出模块。
+  int? _wid;
+  StreamSubscription<PlayerLog>? _nativeLogSubscription;
+
+  void _updateNativeView() {
+    final value = Platform.isIOS && !_nativeUnsupported && _direct;
+    nativeView.value = value;
+    // 不再直出（开了增强 / 超分）：切回纹理，释放层。
+    if (!value && _wid != null) {
+      unawaited(lock.synchronized(() async {
+        if (!nativeView.value && _wid != null) await _releaseNative();
+      }));
+    }
+  }
+
+  @override
+  Future<void> setDirectOutput(bool value) async {
+    if (_direct == value) return;
+    _direct = value;
+    _updateNativeView();
+  }
+
+  /// 原生视图挂上了层 [wid]：第一次把 mpv 切到直出；不支持就降级回纹理。
+  Future<void> _attachNativeView(int viewId, int wid) =>
+      lock.synchronized(() async {
+        if (!nativeView.value || _wid == wid) return;
+        // 换解码设备（VideoToolbox 直出）要重建视频链：先停视频轨再切。
+        await setProperties({
+          'vid': 'no',
+          'wid': '$wid',
+          'vo': 'avfoundation_embed',
+        });
+        // 解析失败（这个 libmpv 没有该模块）时 vo 不变。
+        if (await platform.getProperty('vo') != 'avfoundation_embed') {
+          _wid = wid;
+          await _degradeNativeView();
+          return;
+        }
+        _wid = wid;
+        await setProperty('vid', 'auto');
+      });
+
+  /// 某个原生视图要销毁：只让原生侧摘掉它（层留着，mpv 继续送帧——
+  /// 切后台进画中画时 Flutter 会换视图，小窗还要用这些帧）。
+  Future<void> disposeNativeView(int viewId) =>
+      _channel.invokeMethod('NativeVideoView.Disposed', {'viewId': viewId});
+
+  /// 原生视图的铺满方式：`contain` / `cover` / `fill`。
+  static Future<void> setNativeViewFit(int viewId, String fit) =>
+      _channel.invokeMethod('NativeVideoView.SetFit', {
+        'viewId': viewId,
+        'fit': fit,
+      });
+
+  /// 切回纹理（mpv 不再碰那个层），再让原生侧释放层。
+  Future<void> _releaseNative() async {
+    await setProperties({
+      'vid': 'no',
+      'vo': configuration.vo ?? 'libmpv',
+      'wid': '0',
+    });
+    await setProperty('vid', 'auto');
+    _wid = null;
+    await _channel.invokeMethod('NativeVideoView.Release', {
+      'handle': '${await player.handle}',
+    });
+  }
+
+  Future<void> _degradeNativeView() async {
+    debugPrint('NativeVideoController: native view unavailable, using texture');
+    _nativeUnsupported = true;
+    await _releaseNative();
+    nativeView.value = false;
+  }
+
+  /// 输出模块初始化失败（mpv 报错）：降级回纹理。
+  void _onNativeLog(PlayerLog log) {
+    if (_wid == null) return;
+    final text = log.text;
+    if (text.contains('Failed initializing any suitable video output') ||
+        text.contains('avfoundation_embed') && log.level == 'error') {
+      unawaited(lock.synchronized(() async {
+        if (_wid != null) await _degradeNativeView();
+      }));
+    }
+  }
+
   /// {@macro native_video_controller}
   NativeVideoController._(super.player, super.configuration)
       : width = configuration.width,
@@ -257,6 +356,13 @@ class NativeVideoController extends PlatformVideoController {
     await completer.future;
     controller.id.removeListener(listener);
 
+    // iOS：纹理建好后默认尝试原生直出（纹理留作降级与画中画）。
+    if (Platform.isIOS) {
+      controller._nativeLogSubscription =
+          player.stream.log.listen(controller._onNativeLog);
+      controller._updateNativeView();
+    }
+
     // Return the [VideoController].
     return controller;
   }
@@ -297,8 +403,16 @@ class NativeVideoController extends PlatformVideoController {
   Future<void> _dispose() async {
     super.dispose();
     await videoParamsSubscription?.cancel();
+    await _nativeLogSubscription?.cancel();
     final handle = await player.handle;
     _controllers.remove(handle);
+    // 播放器要销毁：释放它的原生显示层（mpv 输出模块仍持有引用直到销毁）。
+    if (_wid != null) {
+      _wid = null;
+      await _channel.invokeMethod('NativeVideoView.Release', {
+        'handle': '$handle',
+      });
+    }
     await _channel.invokeMethod('VideoOutputManager.Dispose', {
       'handle': handle.toString(),
     });
@@ -348,6 +462,14 @@ class NativeVideoController extends PlatformVideoController {
                   if (state != null) {
                     _controllers[handle]?.pictureInPictureState.value = state;
                   }
+                  break;
+                }
+              case 'NativeVideoView.Created':
+                {
+                  final handle = int.parse(call.arguments['handle']);
+                  final int viewId = call.arguments['viewId'];
+                  final int wid = call.arguments['wid'];
+                  await _controllers[handle]?._attachNativeView(viewId, wid);
                   break;
                 }
               case 'VideoOutput.PictureInPictureSeek':

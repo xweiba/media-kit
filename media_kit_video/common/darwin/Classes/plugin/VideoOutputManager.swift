@@ -71,6 +71,10 @@ public class VideoOutputManager: NSObject {
     }
   }
 
+  public func setNativeSink(handle: Int64, sink: AnyObject?) {
+    videoOutputs[handle]?.setNativeSink(sink)
+  }
+
   public func enterPictureInPicture(handle: Int64) -> Bool {
     videoOutputs[handle]?.enterPictureInPicture() ?? false
   }

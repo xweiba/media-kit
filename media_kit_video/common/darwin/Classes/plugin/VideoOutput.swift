@@ -1,6 +1,8 @@
 import CoreGraphics
 import Foundation
 
+import AVFoundation
+
 #if canImport(Flutter)
   import Flutter
 #elseif canImport(FlutterMacOS)
@@ -302,6 +304,17 @@ public class VideoOutput: NSObject {
         renderer.shouldCaptureFrame
       {
         primePictureInPictureFrame(renderer)
+      }
+    #endif
+  }
+
+  /// iOS 原生直出：画中画的帧改由 mpv 直接送（nil 回到纹理复制）。
+  public func setNativeSink(_ sink: AnyObject?) {
+    #if os(iOS)
+      if #available(iOS 15.0, *),
+        let renderer = pictureInPictureRenderer as? PictureInPictureRenderer
+      {
+        renderer.setSink(sink as? NativeVideoSink)
       }
     #endif
   }

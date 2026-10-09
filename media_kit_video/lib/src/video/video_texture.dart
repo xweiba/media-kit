@@ -9,6 +9,7 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter/rendering.dart';
 import 'package:media_kit_video/src/video_controller/platform_video_controller.dart';
 import 'package:media_kit_video/src/video_controller/android_video_controller/android_video_controller.dart';
+import 'package:media_kit_video/src/video_controller/native_video_controller/native_video_controller.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit_video/media_kit_video_controls/media_kit_video_controls.dart';
 
@@ -377,7 +378,18 @@ class VideoState extends State<Video> with WidgetsBindingObserver {
                               controller: platform,
                               parameters: videoViewParameters,
                             )
-                          : texture!,
+                          // iOS 原生直出；不能直出时 nativeView 为 false，显示纹理。
+                          : platform is NativeVideoController
+                              ? ValueListenableBuilder<bool>(
+                                  valueListenable: platform.nativeView,
+                                  builder: (context, native, _) => native
+                                      ? _IOSNativeVideo(
+                                          controller: platform,
+                                          parameters: videoViewParameters,
+                                        )
+                                      : texture!,
+                                )
+                              : texture!,
                   child: ClipRect(
                   child: FittedBox(
                     fit: videoViewParameters.fit,
@@ -616,3 +628,67 @@ class _AndroidSurfaceVideoState extends State<_AndroidSurfaceVideo> {
 }
 
 const _surfaceViewType = 'com.alexmercerind/media_kit_video/surface';
+
+/// iOS 原生直出视图（AVSampleBufferDisplayLayer，见 NativeVideoView.swift）。
+/// 建好后原生侧报层地址，[NativeVideoController] 把 mpv 切到直出；销毁前先切回纹理。
+class _IOSNativeVideo extends StatefulWidget {
+  const _IOSNativeVideo({required this.controller, required this.parameters});
+
+  final NativeVideoController controller;
+  final VideoViewParameters parameters;
+
+  @override
+  State<_IOSNativeVideo> createState() => _IOSNativeVideoState();
+}
+
+class _IOSNativeVideoState extends State<_IOSNativeVideo> {
+  int? _viewId;
+
+  String get _fit {
+    final fit = widget.parameters.fit;
+    if (fit == BoxFit.cover) return 'cover';
+    if (fit == BoxFit.fill) return 'fill';
+    return 'contain';
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    PlatformVideoController.nativeVideoViews.value++;
+  }
+
+  @override
+  void didUpdateWidget(_IOSNativeVideo old) {
+    super.didUpdateWidget(old);
+    final viewId = _viewId;
+    if (viewId != null && old.parameters.fit != widget.parameters.fit) {
+      unawaited(NativeVideoController.setNativeViewFit(viewId, _fit));
+    }
+  }
+
+  @override
+  void dispose() {
+    final viewId = _viewId;
+    if (viewId != null) {
+      unawaited(widget.controller.disposeNativeView(viewId));
+    }
+    PlatformVideoController.nativeVideoViews.value--;
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => FutureBuilder<int>(
+        future: widget.controller.player.handle,
+        builder: (context, handle) => !handle.hasData
+            ? const SizedBox.shrink()
+            : UiKitView(
+                viewType: _nativeViewType,
+                creationParams: {'handle': '${handle.data}', 'fit': _fit},
+                creationParamsCodec: const StandardMessageCodec(),
+                hitTestBehavior: PlatformViewHitTestBehavior.transparent,
+                onPlatformViewCreated: (id) => _viewId = id,
+              ),
+      );
+}
+
+const _nativeViewType = 'com.alexmercerind/media_kit_video/native_view';

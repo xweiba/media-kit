@@ -63,6 +63,27 @@ final class PictureInPictureRenderer: NSObject,
     let renderSerial: UInt64
   }
   private var lastPresentedFrame: PresentedFrame?
+  /// 上次告诉系统的暂停状态（presentationLock 保护）。
+  private var lastNotifiedPaused: Bool?
+  /// iOS 原生直出时的输出目标：mpv 直接把帧送进 [displayLayer]（准备好画中画
+  /// 时登记进去），不再从纹理复制。nil 为纹理方式。
+  private var sink: NativeVideoSink?
+  /// [sink] 不为 nil（worker 线程读，captureLock 保护）。
+  private var usesSink = false
+
+  /// 换输出方式：原生直出传它的输出目标，回到纹理传 nil。
+  func setSink(_ sink: NativeVideoSink?) {
+    dispatchPrecondition(condition: .onQueue(.main))
+    guard self.sink !== sink else { return }
+    self.sink?.pictureInPictureLayer = nil
+    self.sink = sink
+    captureLock.lock()
+    usesSink = sink != nil
+    captureLock.unlock()
+    // 已在准备 / 显示画中画：新目标立刻接上这个层。
+    if displayLayer.superlayer != nil { sink?.pictureInPictureLayer = displayLayer }
+  }
+
   private lazy var controller: AVPictureInPictureController = {
     let source = AVPictureInPictureController.ContentSource(
       sampleBufferDisplayLayer: displayLayer,
@@ -137,7 +158,8 @@ final class PictureInPictureRenderer: NSObject,
 
   var captureGenerationIfRequested: UInt64? {
     captureLock.lock()
-    let admitted = capturePolicy.admitsFrame(
+    // 原生直出：帧由 mpv 直接送进画中画的层，不从纹理复制。
+    let admitted = !usesSink && capturePolicy.admitsFrame(
       at: ProcessInfo.processInfo.systemUptime
     )
     captureLock.unlock()
@@ -331,6 +353,8 @@ final class PictureInPictureRenderer: NSObject,
       reportFailure(domain: "AVPictureInPictureController", code: -3)
       return false
     }
+    // 原生直出：让 mpv 把同一帧也送进画中画的层。
+    sink?.pictureInPictureLayer = displayLayer
     _ = controller
     observePictureInPicturePossibility()
     observeApplicationLifecycle()
@@ -344,6 +368,10 @@ final class PictureInPictureRenderer: NSObject,
         applicationActive: UIApplication.shared.applicationState == .active
       )
     }
+    // 每次准备都让系统重读播放状态：从小窗回来时播放会短暂停一下再接着放，
+    // 系统在那一瞬把「切后台自动画中画」关掉；这个停顿太短，状态监听未必能
+    // 看到变化，不重读的话下次切后台就不会自动进小窗。
+    controller.invalidatePlaybackState()
     return true
   }
 
@@ -527,6 +555,14 @@ final class PictureInPictureRenderer: NSObject,
       decision = timingPolicy.stateChanged(snapshot)
     }
     apply(decision)
+    // App 里暂停 / 播放：告诉系统重新读播放状态。否则系统一直以为暂停着，
+    // 切后台不会自动进画中画（只在小窗里点播放时才会刷新）。
+    if snapshot.paused != lastNotifiedPaused {
+      lastNotifiedPaused = snapshot.paused
+      DispatchQueue.main.async { [weak self] in
+        self?.controller.invalidatePlaybackState()
+      }
+    }
     let isPlaybackRestart: Bool
     if case .playbackRestarted = event {
       isPlaybackRestart = true
@@ -622,6 +658,8 @@ final class PictureInPictureRenderer: NSObject,
       DispatchQueue.main.async { [weak self] in self?.detachDisplayLayer() }
       return
     }
+    // 不再准备画中画：mpv 别再往这个层送帧。
+    sink?.pictureInPictureLayer = nil
     presentationLock.lock()
     discardPendingSampleLocked()
     displayLayer.flushAndRemoveImage()
@@ -710,7 +748,13 @@ final class PictureInPictureRenderer: NSObject,
         object: nil,
         queue: .main
       ) { [weak self] _ in
-        self?.updateCapturePolicy { $0.setApplicationActive(true) }
+        guard let self else { return }
+        self.updateCapturePolicy { $0.setApplicationActive(true) }
+        // 直接点开 App（没点小窗的返回按钮）：同样把画面收回 App，走与返回
+        // 按钮相同的恢复流程，不留着一个小窗。
+        if self.controller.isPictureInPictureActive {
+          self.controller.stopPictureInPicture()
+        }
       },
     ]
   }
@@ -778,6 +822,11 @@ final class PictureInPictureRenderer: NSObject,
       removeLifecycleObservers()
       stopStateObserver()
       detachDisplayLayer()
+    } else {
+      // 同上：恢复回 App 后的播放状态以 mpv 为准，让系统重读一次。
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+        pictureInPictureController.invalidatePlaybackState()
+      }
     }
     stateCallback("stopped", nil)
   }
