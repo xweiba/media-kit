@@ -336,25 +336,15 @@ class AndroidVideoController extends PlatformVideoController {
     Player player,
     VideoControllerConfiguration configuration,
   ) async {
-    Future<String> getDefaultHwdec() async {
-      // Enforce software rendering in emulators.
-      bool hw = configuration.enableHardwareAcceleration;
-      final bool isEmulator = await _channel.invokeMethod('Utils.IsEmulator');
-      if (isEmulator) {
-        hw = false;
-        debugPrint('media_kit: Emulator detected.');
-        debugPrint('media_kit: Enforcing S/W rendering.');
-      }
-      return hw ? 'auto-safe' : 'no';
-    }
+    // 不按设备特征猜（原先猜「模拟器」就直接关硬解，电视盒子常被误判，硬解
+    // 从没试过）：一律先试硬解，解不了时 mpv 自己退回软解，直出另有日志降级。
+    String getDefaultHwdec() =>
+        configuration.enableHardwareAcceleration ? 'auto-safe' : 'no';
 
-    // Surface mode needs the hardware decoder writing into the surface; on
-    // an emulator (software decoding) fall back to the texture path. Below
-    // Android 10 hybrid-composition platform views copy every Flutter frame
-    // (Flutter documents the cost), so those keep the texture path too.
+    // Below Android 10 hybrid-composition platform views copy every Flutter
+    // frame (Flutter documents the cost), so those keep the texture path.
     if (configuration.androidSurfaceView &&
-        (await _channel.invokeMethod('Utils.IsEmulator') == true ||
-            ((await _channel.invokeMethod<int>('Utils.SdkInt')) ?? 0) < 29)) {
+        ((await _channel.invokeMethod<int>('Utils.SdkInt')) ?? 0) < 29) {
       configuration = configuration.copyWith(androidSurfaceView: false);
     }
     // Update [configuration] to have default values.
@@ -364,7 +354,7 @@ class AndroidVideoController extends PlatformVideoController {
       hwdec: configuration.hwdec ??
           (configuration.androidSurfaceView
               ? 'mediacodec'
-              : await getDefaultHwdec()),
+              : getDefaultHwdec()),
     );
 
     // Retrieve the native handle of the [Player].
