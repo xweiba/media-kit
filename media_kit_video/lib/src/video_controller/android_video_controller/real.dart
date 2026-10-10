@@ -183,9 +183,24 @@ class AndroidVideoController extends PlatformVideoController {
     if (this.wid.value != next) {
       this.wid.value = next;
     } else if (sizeChanged && next != 0) {
-      widListener();
+      if (surfaceMode && _surfaceVo == 'mediacodec_embed') {
+        // MediaCodec renders straight into the same Surface and the
+        // SurfaceView scales it: only the size changed, so the decoder and
+        // output stay as they are (re-binding them restarts the video and
+        // briefly decodes in software under vo=null).
+        unawaited(_setSurfaceSize(top!));
+      } else {
+        widListener();
+      }
     }
   }
+
+  Future<void> _setSurfaceSize(_Surface surface) => lock.synchronized(
+        () => setProperty(
+          'android-surface-size',
+          '${surface.width}x${surface.height}',
+        ),
+      );
 
   /// Surface mode: frames go from MediaCodec straight to the display and never
   /// reach mpv's renderer, so mpv cannot take a screenshot. Copies the pixels
