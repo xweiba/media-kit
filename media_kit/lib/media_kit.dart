@@ -13,6 +13,7 @@ export 'package:media_kit/src/models/audio_params.dart';
 export 'package:media_kit/src/models/media/media.dart';
 export 'package:media_kit/src/models/playable.dart';
 export 'package:media_kit/src/models/player_log.dart';
+export 'package:media_kit/src/models/playback_source_event.dart';
 export 'package:media_kit/src/models/player_state.dart';
 export 'package:media_kit/src/models/player_stream.dart';
 export 'package:media_kit/src/models/playlist_mode.dart';

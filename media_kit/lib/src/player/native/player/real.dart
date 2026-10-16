@@ -22,6 +22,7 @@ import 'package:media_kit/src/models/media/media.dart';
 import 'package:media_kit/src/models/playable.dart';
 import 'package:media_kit/src/models/player_log.dart';
 import 'package:media_kit/src/models/player_state.dart';
+import 'package:media_kit/src/models/playback_source_event.dart';
 import 'package:media_kit/src/models/playlist_mode.dart';
 import 'package:media_kit/src/models/playlist.dart';
 import 'package:media_kit/src/models/track.dart';
@@ -30,6 +31,7 @@ import 'package:media_kit/src/player/native/core/fallback_bitrate_handler.dart';
 import 'package:media_kit/src/player/native/core/initializer.dart';
 import 'package:media_kit/src/player/native/core/native_library.dart';
 import 'package:media_kit/src/player/native/core/native_media_io.dart';
+import 'package:media_kit/src/player/native/core/source_event_tracker.dart';
 import 'package:media_kit/src/player/native/utils/android_asset_loader.dart';
 import 'package:media_kit/src/player/native/utils/android_helper.dart';
 import 'package:media_kit/src/player/native/utils/isolates.dart';
@@ -85,6 +87,7 @@ class NativePlayer extends PlatformPlayer {
   /// {@macro native_player}
   NativePlayer({required super.configuration})
       : mpv = generated.MPV(DynamicLibrary.open(NativeLibrary.path)) {
+    _sourceEvents = SourceEventTracker(mpv, () => ctx);
     future = _create()
       ..then((_) {
         try {
@@ -110,6 +113,7 @@ class NativePlayer extends PlatformPlayer {
 
       await super.dispose();
       await _firstFrameOfMedia.close();
+      await _sourceEvents.close();
 
       Initializer(mpv).dispose(ctx);
 
@@ -160,13 +164,37 @@ class NativePlayer extends PlatformPlayer {
     Playable playable, {
     bool play = true,
     bool synchronized = true,
+    Object? source,
   }) {
+    if (source != null && playable is! Media) {
+      return Future<void>.error(
+        ArgumentError.value(
+          playable,
+          'playable',
+          'Source-attributed opens require a single Media.',
+        ),
+      );
+    }
+
     Future<void> function() async {
       if (disposed) {
         throw AssertionError('[Player] has been disposed');
       }
       await waitForPlayerInitialization;
       await waitForVideoControllerInitializationIfAttached;
+      if (source != null &&
+          (!_sourceHooksAvailable || !_sourceEvents.supportsEntryIds)) {
+        throw UnsupportedError(
+          'The loaded libmpv does not support source-attributed playback.',
+        );
+      }
+      if (source != null && _sourceEvents.containsSource(source)) {
+        throw ArgumentError.value(
+          source,
+          'source',
+          'Each source-attributed open requires a new token object.',
+        );
+      }
 
       final int index;
       final List<Media> playlist = <Media>[];
@@ -180,74 +208,101 @@ class NativePlayer extends PlatformPlayer {
         index = -1;
       }
 
-      // Keep these [Media] objects in memory.
-      current = playlist;
+      try {
+        // Keep these [Media] objects in memory.
+        current = playlist;
 
-      // External List<Media>:
-      // ---------------------------------------------
-      state = state.copyWith(playlist: Playlist(playlist, index: index));
-      if (!playlistController.isClosed) {
-        playlistController.add(Playlist(playlist, index: index));
-      }
-      // ---------------------------------------------
-
-      // Restore original state & reset public [PlayerState] & [PlayerStream] values e.g. width=null, height=null, subtitle=['', ''] etc.
-      await stop(
-        open: true,
-        synchronized: false,
-      );
-
-      // Enter paused state.
-      await _setPropertyFlag('pause', true);
-
-      if (playlist.any((media) => media.uri.startsWith('fd://'))) {
-        // The fd:// scheme is used to reference content:// URIs on Android.
-        // The loadlist command does not support this by default, yielding "Refusing to load potentially unsafe URL from a playlist."
-        // So, we fallback to loading each file individually.
-        for (int i = 0; i < playlist.length; i++) {
-          await _command(
-            [
-              'loadfile',
-              playlist[i].uri,
-              'append',
-            ],
-          );
+        // External List<Media>:
+        // ---------------------------------------------
+        state = state.copyWith(playlist: Playlist(playlist, index: index));
+        if (!playlistController.isClosed) {
+          playlistController.add(Playlist(playlist, index: index));
         }
-      } else {
-        final file = await TempFile.create();
-        final buffer = StringBuffer();
-        for (final media in playlist) {
-          buffer.writeln(media.uri);
-        }
-        final list = buffer.toString();
+        // ---------------------------------------------
 
-        await file.write_(list);
-
-        await _command(
-          [
-            'loadlist',
-            file.path,
-            'append',
-          ],
+        // Restore original state & reset public [PlayerState] & [PlayerStream] values e.g. width=null, height=null, subtitle=['', ''] etc.
+        await stop(
+          open: true,
+          synchronized: false,
         );
 
-        Future.delayed(const Duration(seconds: 5), () {
-          file.delete_();
-        });
-      }
+        // Enter paused state.
+        await _setPropertyFlag('pause', true);
 
-      // If [play] is `true`, then exit paused state.
-      if (play) {
-        isPlayingStateChangeAllowed = true;
-        await _setPropertyFlag('pause', false);
-        state = state.copyWith(playing: true);
-        if (!playingController.isClosed) {
-          playingController.add(true);
+        if (playlist.any((media) => media.uri.startsWith('fd://'))) {
+          // The fd:// scheme is used to reference content:// URIs on Android.
+          // The loadlist command does not support this by default, yielding "Refusing to load potentially unsafe URL from a playlist."
+          // So, we fallback to loading each file individually.
+          for (int i = 0; i < playlist.length; i++) {
+            await _command(
+              [
+                'loadfile',
+                playlist[i].uri,
+                'append',
+              ],
+              throwOnError: source != null,
+            );
+          }
+        } else {
+          final file = await TempFile.create();
+          final buffer = StringBuffer();
+          for (final media in playlist) {
+            buffer.writeln(media.uri);
+          }
+          final list = buffer.toString();
+
+          await file.write_(list);
+
+          await _command(
+            [
+              'loadlist',
+              file.path,
+              'append',
+            ],
+            throwOnError: source != null,
+          );
+
+          Future.delayed(const Duration(seconds: 5), () {
+            file.delete_();
+          });
         }
-      }
 
-      // Jump to the specified [index] (in both cases either [play] is `true` or `false`).
-      await _setPropertyInt64('playlist-pos', index);
+        if (source == null) {
+          _sourceEvents.expectUnattributedOpen();
+        } else {
+          _sourceEvents.register(_readPlaylistEntryId(), source);
+        }
+
+        // If [play] is `true`, then exit paused state.
+        if (play) {
+          isPlayingStateChangeAllowed = true;
+          await _setPropertyFlag('pause', false);
+          state = state.copyWith(playing: true);
+          if (!playingController.isClosed) {
+            playingController.add(true);
+          }
+        }
+
+        // Jump to the specified [index] in either play mode.
+        await _setPropertyInt64(
+          'playlist-pos',
+          index,
+          throwOnError: source != null,
+        );
+      } catch (_) {
+        if (source != null) {
+          _sourceEvents.invalidateForSourceOpenFailure(
+            'source open failed during native playlist mutation or selection',
+          );
+          try {
+            await _command(['stop']);
+          } catch (_) {}
+          try {
+            await _command(['playlist-clear']);
+          } catch (_) {}
+        }
+        rethrow;
+      }
     }
 
     if (synchronized) {
@@ -1167,6 +1222,7 @@ class NativePlayer extends PlatformPlayer {
   /// Takes the snapshot of the current video frame & returns bytes that are
   /// safe to retain or transfer to another isolate.
   @override
+
   /// Takes screenshots in place of mpv when frames never reach mpv's renderer
   /// (Android surface mode: MediaCodec writes straight into a `SurfaceView`).
   /// Set by the video output; `null` uses mpv. A `null` result falls back to mpv.
@@ -1438,6 +1494,8 @@ class NativePlayer extends PlatformPlayer {
   }
 
   Future<void> _handler(Pointer<generated.mpv_event> event) async {
+    if (_sourceEvents.handle(event)) return;
+
     if (event.ref.event_id ==
         generated.mpv_event_id.MPV_EVENT_PROPERTY_CHANGE) {
       final prop = event.ref.data.cast<generated.mpv_event_property>();
@@ -2624,10 +2682,23 @@ class NativePlayer extends PlatformPlayer {
       // Add libmpv hooks for supporting custom HTTP headers in [Media].
       final load = 'on_load'.toNativeUtf8();
       final unload = 'on_unload'.toNativeUtf8();
-      mpv.mpv_hook_add(ctx, 0, load.cast(), 0);
-      mpv.mpv_hook_add(ctx, 0, unload.cast(), 0);
-      calloc.free(load);
-      calloc.free(unload);
+      final beforeStart = 'on_before_start_file'.toNativeUtf8();
+      final afterEnd = 'on_after_end_file'.toNativeUtf8();
+      try {
+        final loadResult = mpv.mpv_hook_add(ctx, 0, load.cast(), 0);
+        final unloadResult = mpv.mpv_hook_add(ctx, 0, unload.cast(), 0);
+        final beforeResult = mpv.mpv_hook_add(ctx, 0, beforeStart.cast(), 0);
+        final afterResult = mpv.mpv_hook_add(ctx, 0, afterEnd.cast(), 0);
+        _sourceHooksAvailable = loadResult >= 0 &&
+            unloadResult >= 0 &&
+            beforeResult >= 0 &&
+            afterResult >= 0;
+      } finally {
+        calloc.free(load);
+        calloc.free(unload);
+        calloc.free(beforeStart);
+        calloc.free(afterEnd);
+      }
 
       await NativeReferenceHolder.instance.add(ctx);
     });
@@ -2651,7 +2722,12 @@ class NativePlayer extends PlatformPlayer {
   final Map<int, Completer<int>> _setPropertyRequests = {};
   final Map<int, Completer<int>> _commandRequests = {};
 
-  Future<void> _setProperty(String name, int format, Pointer<Void> data) async {
+  Future<void> _setProperty(
+    String name,
+    int format,
+    Pointer<Void> data, {
+    bool throwOnError = false,
+  }) async {
     final namePtr = name.toNativeUtf8();
     try {
       if (configuration.async) {
@@ -2670,16 +2746,33 @@ class NativePlayer extends PlatformPlayer {
           // Sending failed, so no reply event will remove this request.
           _setPropertyRequests.remove(requestNumber);
           _logError(immediate, text);
+          if (throwOnError) {
+            final reason =
+                mpv.mpv_error_string(immediate).cast<Utf8>().toDartString();
+            throw StateError('mpv set $name failed: $reason ($immediate)');
+          }
           return;
         }
-        _logError(await completer.future, text);
+        final result = await completer.future;
+        _logError(result, text);
+        if (throwOnError && result < 0) {
+          final reason =
+              mpv.mpv_error_string(result).cast<Utf8>().toDartString();
+          throw StateError('mpv set $name failed: $reason ($result)');
+        }
       } else {
-        mpv.mpv_set_property(
+        final result = mpv.mpv_set_property(
           ctx,
           namePtr.cast(),
           format,
           data,
         );
+        _logError(result, '_setProperty($name, $format)');
+        if (throwOnError && result < 0) {
+          final reason =
+              mpv.mpv_error_string(result).cast<Utf8>().toDartString();
+          throw StateError('mpv set $name failed: $reason ($result)');
+        }
       }
     } finally {
       calloc.free(namePtr);
@@ -2706,14 +2799,22 @@ class NativePlayer extends PlatformPlayer {
     calloc.free(ptr);
   }
 
-  Future<void> _setPropertyInt64(String name, int value) async {
+  Future<void> _setPropertyInt64(
+    String name,
+    int value, {
+    bool throwOnError = false,
+  }) async {
     final ptr = calloc<Int64>(1)..value = value;
-    await _setProperty(
-      name,
-      generated.mpv_format.MPV_FORMAT_INT64,
-      ptr.cast(),
-    );
-    calloc.free(ptr);
+    try {
+      await _setProperty(
+        name,
+        generated.mpv_format.MPV_FORMAT_INT64,
+        ptr.cast(),
+        throwOnError: throwOnError,
+      );
+    } finally {
+      calloc.free(ptr);
+    }
   }
 
   Future<void> _setPropertyString(String name, String value) async {
@@ -2769,6 +2870,54 @@ class NativePlayer extends PlatformPlayer {
 
   /// Generated libmpv C API bindings.
   final generated.MPV mpv;
+
+  late final SourceEventTracker _sourceEvents;
+
+  bool _sourceHooksAvailable = false;
+
+  @override
+  bool get supportsSourceEvents => true;
+
+  @override
+  Stream<PlaybackSourceEvent> get sourceEvents => _sourceEvents.stream;
+
+  int _readPlaylistEntryId() {
+    final testReader = sourceEntryIdReaderForTesting;
+    if (testReader != null) return testReader();
+
+    final countName = 'playlist/count'.toNativeUtf8();
+    final idName = 'playlist/0/id'.toNativeUtf8();
+    final count = calloc<Int64>();
+    final id = calloc<Int64>();
+    try {
+      final countResult = mpv.mpv_get_property(
+        ctx,
+        countName.cast(),
+        generated.mpv_format.MPV_FORMAT_INT64,
+        count.cast(),
+      );
+      if (countResult < 0 || count.value != 1) {
+        throw StateError(
+          'Expected one native playlist entry for a source-attributed open.',
+        );
+      }
+      final idResult = mpv.mpv_get_property(
+        ctx,
+        idName.cast(),
+        generated.mpv_format.MPV_FORMAT_INT64,
+        id.cast(),
+      );
+      if (idResult < 0) {
+        throw StateError('Unable to read the native playlist entry ID.');
+      }
+      return id.value;
+    } finally {
+      calloc.free(countName);
+      calloc.free(idName);
+      calloc.free(count);
+      calloc.free(id);
+    }
+  }
 
   /// First native playback restart after each file start.
   ///
@@ -2835,6 +2984,9 @@ class NativePlayer extends PlatformPlayer {
   /// Whether the [NativePlayer] is initialized for unit-testing.
   @visibleForTesting
   static bool test = false;
+
+  @visibleForTesting
+  static int Function()? sourceEntryIdReaderForTesting;
 }
 
 /// Cache export failure is diagnostic output, not failure to play the source.

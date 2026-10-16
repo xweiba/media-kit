@@ -343,7 +343,13 @@ class WebPlayer extends PlatformPlayer {
     Playable playable, {
     bool play = true,
     bool synchronized = true,
+    Object? source,
   }) async {
+    if (source != null) {
+      throw UnsupportedError(
+        'Source-attributed playback events are not supported on web.',
+      );
+    }
     Future<void> function() async {
       if (disposed) {
         throw AssertionError('[Player] has been disposed');

@@ -11,6 +11,7 @@ import 'package:collection/collection.dart';
 
 import 'package:media_kit/src/models/track.dart';
 import 'package:media_kit/src/models/playable.dart';
+import 'package:media_kit/src/models/playback_source_event.dart';
 import 'package:media_kit/src/models/playlist.dart';
 import 'package:media_kit/src/models/player_log.dart';
 import 'package:media_kit/src/models/media/media.dart';
@@ -161,11 +162,19 @@ abstract class PlatformPlayer {
   Future<void> open(
     Playable playable, {
     bool play = true,
+    Object? source,
   }) {
     throw UnimplementedError(
       '[PlatformPlayer.open] is not implemented',
     );
   }
+
+  /// Whether this backend can emit events with native open-source provenance.
+  bool get supportsSourceEvents => false;
+
+  /// Events attributed to a caller-provided token passed to [open].
+  Stream<PlaybackSourceEvent> get sourceEvents =>
+      const Stream<PlaybackSourceEvent>.empty();
 
   Future<void> stop() {
     throw UnimplementedError(

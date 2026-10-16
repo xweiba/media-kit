@@ -8,6 +8,7 @@ import 'package:universal_platform/universal_platform.dart';
 
 import 'package:media_kit/src/models/track.dart';
 import 'package:media_kit/src/models/playable.dart';
+import 'package:media_kit/src/models/playback_source_event.dart';
 import 'package:media_kit/src/models/playlist.dart';
 import 'package:media_kit/src/models/media/media.dart';
 import 'package:media_kit/src/models/audio_device.dart';
@@ -156,15 +157,32 @@ class Player {
   /// );
   /// ```
   ///
+  /// A non-null [source] enables source-attributed events on supported native
+  /// backends. Use a new immutable token for each logical open. This mode
+  /// accepts a single [Media], and its events can be read from [sourceEvents].
+  /// Subscribe before calling open so immediate native events are observed.
+  ///
   Future<void> open(
     Playable playable, {
     bool play = true,
+    Object? source,
   }) async {
     return platform?.open(
       playable,
       play: play,
+      source: source,
     );
   }
+
+  /// Whether this player's backend supports source-attributed playback events.
+  bool get supportsSourceEvents => platform?.supportsSourceEvents ?? false;
+
+  /// Native playback events carrying the exact token supplied to [open].
+  ///
+  /// Subscribe before calling [open]. Web and other unsupported backends
+  /// expose an empty stream and reject opens with a non-null [source].
+  Stream<PlaybackSourceEvent> get sourceEvents =>
+      platform?.sourceEvents ?? const Stream<PlaybackSourceEvent>.empty();
 
   /// Stops the [Player].
   /// Unloads the current [Media] or [Playlist] from the [Player]. This method is similar to [dispose] but does not release the resources & [Player] is still usable.
