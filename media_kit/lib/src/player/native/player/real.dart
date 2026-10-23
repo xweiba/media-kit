@@ -2483,6 +2483,11 @@ class NativePlayer extends PlatformPlayer {
         // supported builds disable it before scripts are loaded, while builds
         // without the option can safely ignore it.
         if (!configuration.osc) 'osc': 'no',
+        // Skip mpv's AVAudioSession management when the embedder owns the
+        // session. iOS-specific; unknown to older libmpv builds, which ignore
+        // initialization options they don't support.
+        if (Platform.isIOS && !configuration.iosManageAudioSession)
+          'audiounit-skip-session-management': 'yes',
       };
 
       if (Platform.isAndroid &&

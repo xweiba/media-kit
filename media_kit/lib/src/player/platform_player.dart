@@ -576,6 +576,24 @@ class PlayerConfiguration {
   /// until the underlying mpv core terminates and must outlive the [Player].
   final List<NativeMediaIOProvider> mediaIOProviders;
 
+  /// Whether [Player] should let mpv configure and activate the global
+  /// `AVAudioSession` on iOS.
+  ///
+  /// When `false`, the AudioUnit audio output skips `setCategory`,
+  /// `setActive:YES` on init, and `setActive:NO` on dispose — leaving the
+  /// session under the embedder's control (requires a libmpv that supports
+  /// `--audiounit-skip-session-management`; older builds ignore it).
+  ///
+  /// `AVAudioSession` is process-wide on iOS, so when more than one
+  /// component manages audio (e.g. another player or a custom coordinator),
+  /// only one of them should own the session — otherwise their category and
+  /// activation calls will conflict and cause playback issues.
+  ///
+  /// No effect on platforms other than iOS.
+  ///
+  /// Default: `true`.
+  final bool iosManageAudioSession;
+
   /// {@macro player_configuration}
   const PlayerConfiguration({
     this.vo = 'null',
@@ -605,6 +623,7 @@ class PlayerConfiguration {
     ],
     this.adBlocker = false,
     this.mediaIOProviders = const [],
+    this.iosManageAudioSession = true,
   });
 }
 
