@@ -1,7 +1,7 @@
 # Apple audio analysis filters
 
-This fork consumes xweiba/libmpv-darwin-build tag `0.6.8-mediaio.5`
-(source commit `1533a04074082cfcec2fc54acb8b3f42d2dc3736`), based on
+This fork consumes xweiba/libmpv-darwin-build tag `0.6.8-mediaio.7`
+(source commit `e067d480fa399f0a5cc71967b8a969af2a2655a8`), based on
 mpv 0.36 / FFmpeg 6.0. Upstream: https://github.com/media-kit/media-kit.
 
 The music visualizer requires astats, aresample, aformat, anull, asplit,
