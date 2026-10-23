@@ -1473,6 +1473,71 @@ class NativePlayer extends PlatformPlayer {
     mpv.mpv_unobserve_property(ctx, reply);
   }
 
+  /// Observes event for the internal libmpv instance of this [Player].
+  /// Please use this method only if you know what you are doing, existing methods in [Player] implementation are suited for the most use cases.
+  ///
+  /// [listener] receives the raw event, which is only valid until it returns.
+  ///
+  /// See:
+  /// * https://mpv.io/manual/master/#list-of-events
+  ///
+  Future<void> observeEvent(
+    int event,
+    Future<void> Function(Pointer<generated.mpv_event>) listener, {
+    bool waitForInitialization = true,
+  }) async {
+    if (disposed) {
+      throw AssertionError('[Player] has been disposed');
+    }
+
+    if (waitForInitialization) {
+      await waitForPlayerInitialization;
+      await waitForVideoControllerInitializationIfAttached;
+    }
+
+    if (observedEvents.containsKey(event)) {
+      throw ArgumentError.value(
+        event,
+        'event',
+        'Already observed',
+      );
+    }
+    observedEvents[event] = listener;
+    _logError(mpv.mpv_request_event(ctx, event, 1), 'observeEvent($event)');
+  }
+
+  /// Unobserves event for the internal libmpv instance of this [Player].
+  /// Please use this method only if you know what you are doing, existing methods in [Player] implementation are suited for the most use cases.
+  ///
+  /// Only the [observeEvent] listener is removed; events that media_kit
+  /// itself relies on keep being delivered.
+  ///
+  /// See:
+  /// * https://mpv.io/manual/master/#list-of-events
+  ///
+  Future<void> unobserveEvent(
+    int event, {
+    bool waitForInitialization = true,
+  }) async {
+    if (disposed) {
+      throw AssertionError('[Player] has been disposed');
+    }
+
+    if (waitForInitialization) {
+      await waitForPlayerInitialization;
+      await waitForVideoControllerInitializationIfAttached;
+    }
+
+    if (!observedEvents.containsKey(event)) {
+      throw ArgumentError.value(
+        event,
+        'event',
+        'Not observed',
+      );
+    }
+    observedEvents.remove(event);
+  }
+
   /// Invokes command for the internal libmpv instance of this [Player].
   /// Please use this method only if you know what you are doing, existing methods in [Player] implementation are suited for the most use cases.
   ///
@@ -1584,6 +1649,16 @@ class NativePlayer extends PlatformPlayer {
             'Warning: Received MPV_EVENT_COMMAND_REPLY with unregistered ID ${event.ref.reply_userdata}');
       } else {
         completer.complete(event.ref.error);
+      }
+    }
+
+    final fn = observedEvents[event.ref.event_id];
+    if (fn != null) {
+      try {
+        await fn.call(event);
+      } catch (exception, stacktrace) {
+        print(exception);
+        print(stacktrace);
       }
     }
 
@@ -2902,6 +2977,11 @@ class NativePlayer extends PlatformPlayer {
   /// Currently observed properties through [observeProperty].
   final HashMap<String, Future<void> Function(String)> observed =
       HashMap<String, Future<void> Function(String)>();
+
+  /// Currently observed events through [observeEvent].
+  final HashMap<int, Future<void> Function(Pointer<generated.mpv_event>)>
+      observedEvents =
+      HashMap<int, Future<void> Function(Pointer<generated.mpv_event>)>();
 
   /// The methods which must execute synchronously before playback of a source can begin.
   final List<Future<void> Function()> onLoadHooks = [];
