@@ -23,7 +23,8 @@ G_DECLARE_FINAL_TYPE(TextureGL, texture_gl, TEXTURE_GL, TEXTURE_GL, FlTextureGL)
 TextureGL* texture_gl_new(VideoOutput* video_output);
 
 // Creates/resizes all three mailbox buffers if needed. GL thread only.
-void texture_gl_check_and_resize(TextureGL* self, gint64 required_width, gint64 required_height);
+// Returns TRUE when the buffers were (re)created and hold no frame yet.
+gboolean texture_gl_check_and_resize(TextureGL* self, gint64 required_width, gint64 required_height);
 
 // Renders an mpv frame to the back buffer. GL thread only.
 // Returns TRUE if a frame was rendered.

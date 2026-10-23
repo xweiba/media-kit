@@ -213,11 +213,11 @@ TextureGL* texture_gl_new(VideoOutput* video_output) {
 /**
  * Creates or resizes all three buffers. Runs in the dedicated GL thread.
  */
-void texture_gl_check_and_resize(TextureGL* self, gint64 required_width, gint64 required_height) {
+gboolean texture_gl_check_and_resize(TextureGL* self, gint64 required_width, gint64 required_height) {
   VideoOutput* video_output = self->video_output;
 
   if (required_width < 1 || required_height < 1) {
-    return;
+    return FALSE;
   }
 
   gboolean first_frame = !self->buffers_initialized;
@@ -225,7 +225,7 @@ void texture_gl_check_and_resize(TextureGL* self, gint64 required_width, gint64 
                     self->current_height != (guint32)required_height;
 
   if (!first_frame && !resize) {
-    return;
+    return FALSE;
   }
 
   EGLDisplay egl_display = video_output_get_egl_display(video_output);
@@ -301,6 +301,7 @@ void texture_gl_check_and_resize(TextureGL* self, gint64 required_width, gint64 
   self->current_height = required_height;
 
   self->resizing.store(FALSE, std::memory_order_release);
+  return TRUE;
 }
 
 /**

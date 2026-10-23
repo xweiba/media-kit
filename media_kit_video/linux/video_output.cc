@@ -24,6 +24,8 @@ struct _VideoOutput {
   guint8* pixel_buffer;
   TextureSW* texture_sw;
   GMutex mutex; /* Only used in S/W rendering. */
+  gint64 sw_rendered_width;  /* Size of the last S/W frame in |pixel_buffer|. */
+  gint64 sw_rendered_height;
   mpv_handle* handle;
   mpv_render_context* render_context;
   gint64 width;
@@ -98,6 +100,8 @@ static void video_output_init(VideoOutput* self) {
   self->egl_context = EGL_NO_CONTEXT;
   self->texture_sw = NULL;
   self->pixel_buffer = NULL;
+  self->sw_rendered_width = 0;
+  self->sw_rendered_height = 0;
   self->handle = NULL;
   self->render_context = NULL;
   self->width = 0;
@@ -300,9 +304,18 @@ VideoOutput* video_output_new(FlTextureRegistrar* texture_registrar,
                       return FALSE;
                     }
                     g_mutex_lock(&self->mutex);
+                    // Acknowledge the update; mpv also wakes us for reasons
+                    // that need no new frame. Re-render only for a new frame
+                    // or when the target size changed since the last one.
+                    uint64_t flags =
+                        mpv_render_context_update(self->render_context);
                     gint64 width = video_output_get_width(self);
                     gint64 height = video_output_get_height(self);
-                    if (width > 0 && height > 0) {
+                    gboolean needs_render =
+                        (flags & MPV_RENDER_UPDATE_FRAME) != 0 ||
+                        width != self->sw_rendered_width ||
+                        height != self->sw_rendered_height;
+                    if (needs_render && width > 0 && height > 0) {
                       gint32 size[]{(gint32)width, (gint32)height};
                       gint32 pitch = 4 * (gint32)width;
                       // Runs on the platform thread: never wait for mpv's
@@ -318,6 +331,8 @@ VideoOutput* video_output_new(FlTextureRegistrar* texture_registrar,
                           {MPV_RENDER_PARAM_INVALID, (void*)0},
                       };
                       mpv_render_context_render(self->render_context, params);
+                      self->sw_rendered_width = width;
+                      self->sw_rendered_height = height;
                       fl_texture_registrar_mark_texture_frame_available(
                           self->texture_registrar,
                           FL_TEXTURE(self->texture_sw));
@@ -496,26 +511,35 @@ void video_output_notify_texture_update(VideoOutput* self) {
 }
 
 // Both run in the dedicated GL thread.
-static void video_output_check_and_resize(VideoOutput* self) {
+// Returns TRUE when the mailbox buffers were (re)created and hold no frame.
+static gboolean video_output_check_and_resize(VideoOutput* self) {
   if (self->destroyed || !self->texture_gl) {
-    return;
+    return FALSE;
   }
 
   gint64 required_width = video_output_get_width(self);
   gint64 required_height = video_output_get_height(self);
   if (required_width < 1 || required_height < 1) {
-    return;
+    return FALSE;
   }
 
-  texture_gl_check_and_resize(self->texture_gl, required_width, required_height);
+  return texture_gl_check_and_resize(self->texture_gl, required_width,
+                                     required_height);
 }
 
-static void video_output_render(VideoOutput* self) {
+static void video_output_render(VideoOutput* self, gboolean force) {
   if (self->destroyed) {
     return;
   }
 
   if (self->texture_gl && self->render_context) {
+    // Every update callback must be acknowledged on the render thread; only
+    // MPV_RENDER_UPDATE_FRAME means a new frame is due. Freshly (re)created
+    // buffers are empty, so they always get the current frame.
+    uint64_t flags = mpv_render_context_update(self->render_context);
+    if (!force && (flags & MPV_RENDER_UPDATE_FRAME) == 0) {
+      return;
+    }
     if (texture_gl_render(self->texture_gl)) {
       texture_gl_swap_buffers(self->texture_gl);
       fl_texture_registrar_mark_texture_frame_available(
@@ -529,7 +553,7 @@ void video_output_notify_render(VideoOutput* self) {
     return;
   }
   self->gl_render_thread->Post([self]() {
-    video_output_check_and_resize(self);
-    video_output_render(self);
+    gboolean resized = video_output_check_and_resize(self);
+    video_output_render(self, resized);
   });
 }
