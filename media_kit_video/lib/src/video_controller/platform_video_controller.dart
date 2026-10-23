@@ -69,7 +69,9 @@ class PictureInPictureSeekEvent {
 ///
 /// {@endtemplate}
 abstract class PlatformVideoController {
-  /// Number of native video views (Android surface mode) currently on screen.
+  /// Number of native (platform) video views currently on screen: Android
+  /// surface mode (`vo=mediacodec_embed`) and iOS direct output
+  /// (`vo=avfoundation_embed`). Texture-based video is not counted.
   /// Flutter cannot read their pixels: backdrop effects (blur, refraction)
   /// drawn over them see nothing, so hosts may switch such surfaces to an
   /// opaque look while this is above zero.
