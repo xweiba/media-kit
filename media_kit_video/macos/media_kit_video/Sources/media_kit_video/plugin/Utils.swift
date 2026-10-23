@@ -4,6 +4,7 @@ public class Utils: NSObject, UtilsProtocol {
   private let registrar: FlutterPluginRegistrar
   private var transitionObservers: [NSObjectProtocol] = []
   private var transitionTimeout: DispatchWorkItem?
+  private var pendingCompletion: (() -> Void)?
 
   init(_ registrar: FlutterPluginRegistrar) {
     self.registrar = registrar
@@ -56,21 +57,28 @@ public class Utils: NSObject, UtilsProtocol {
     success: Notification.Name,
     completion: @escaping () -> Void
   ) {
-    clearTransitionObservers()
+    // A newer request supersedes the pending one: still reply to its caller,
+    // otherwise that method-channel result would never complete.
+    finishPendingTransition()
+    pendingCompletion = completion
     let center = NotificationCenter.default
     transitionObservers.append(
       center.addObserver(forName: success, object: window, queue: .main) { [weak self] _ in
-        self?.clearTransitionObservers()
-        completion()
+        self?.finishPendingTransition()
       }
     )
     let timeout = DispatchWorkItem { [weak self] in
-      guard let self, !self.transitionObservers.isEmpty else { return }
-      self.clearTransitionObservers()
-      completion()
+      self?.finishPendingTransition()
     }
     transitionTimeout = timeout
     DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: timeout)
+  }
+
+  private func finishPendingTransition() {
+    clearTransitionObservers()
+    let completion = pendingCompletion
+    pendingCompletion = nil
+    completion?()
   }
 
   private func clearTransitionObservers() {
