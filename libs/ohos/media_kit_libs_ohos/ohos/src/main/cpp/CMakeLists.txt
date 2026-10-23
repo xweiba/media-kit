@@ -88,6 +88,7 @@ if(NOT LIBMPV_SRC_VALID)
   add_custom_target("LIBMPV_EXTRACT" ALL)
   add_custom_command(
     TARGET "LIBMPV_EXTRACT"
+    POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E tar -xf "${LIBMPV_ARCHIVE}"
     COMMAND "${CMAKE_COMMAND}" -E touch "${LIBMPV_STAMP}"
     WORKING_DIRECTORY "${LIBMPV_SRC}"

@@ -111,6 +111,7 @@ if(NOT LIBMPV_SRC_VALID)
   add_custom_target("${PROJECT_NAME}_LIBMPV_EXTRACT" ALL)
   add_custom_command(
     TARGET "${PROJECT_NAME}_LIBMPV_EXTRACT"
+    POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E tar xzf "\"${LIBMPV_ARCHIVE}\""
     COMMAND xcopy "\"${LIBMPV_SRC}/include/mpv\"" "\"${LIBMPV_SRC}/mpv\"" /E /H /C /I
     COMMAND rmdir "\"${LIBMPV_SRC}/include\"" /S /Q
