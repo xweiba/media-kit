@@ -318,6 +318,7 @@ class WebPlayer extends PlatformPlayer {
         trackController.add(state.track);
       }
 
+      _revokeSubtitleBlobUrl();
       disposed = true;
 
       element
@@ -1289,12 +1290,11 @@ class WebPlayer extends PlatformPlayer {
         if (track.uri) {
           uri = track.id;
         } else if (track.data) {
-          // Create object URL from subtitle data.
+          // Create object URL from subtitle data; only the current track's
+          // URL is kept alive (revoked on track change & [dispose]).
+          _revokeSubtitleBlobUrl();
           final src = html.Url.createObjectUrlFromBlob(html.Blob([track.id]));
-          // Revoke the object URL upon [dispose].
-          release.add(() async {
-            html.Url.revokeObjectUrl(src);
-          });
+          _subtitleBlobUrl = src;
           uri = src;
         } else {
           return;
@@ -1303,11 +1303,9 @@ class WebPlayer extends PlatformPlayer {
         element.children.removeWhere((e) => e is html.TrackElement);
 
         final child = html.TrackElement();
-        child.src = uri;
         child.kind = 'subtitles';
         child.label = track.title;
         child.srclang = track.language;
-        element.append(child);
 
         state = state.copyWith(track: state.track.copyWith(subtitle: track));
         if (!trackController.isClosed) {
@@ -1320,11 +1318,11 @@ class WebPlayer extends PlatformPlayer {
           subtitleController.add(['', '']);
         }
 
-        final tracks = element.textTracks?.toList() ?? <html.TextTrack>[];
-        tracks.first.mode = 'hidden';
-        tracks.first.onCueChange.listen((_) {
+        // Use this element's own TextTrack: `element.textTracks.first` may be
+        // a different (e.g. in-band or not yet removed) track.
+        void handleCueChange(html.TextTrack textTrack) {
           try {
-            final data = tracks.first.activeCues?.map((e) {
+            final data = textTrack.activeCues?.map((e) {
               final text = (e as dynamic).text as String;
               return text
                   .replaceAll(RegExp('<[^>]*>'), ' ')
@@ -1335,7 +1333,7 @@ class WebPlayer extends PlatformPlayer {
               final subtitle = ['', ''];
               if (data.length == 1) {
                 subtitle[0] = data[0];
-              } else if (data.length == 2) {
+              } else if (data.length >= 2) {
                 subtitle[0] = data[0];
                 subtitle[1] = data.skip(1).join('\n');
               }
@@ -1348,7 +1346,20 @@ class WebPlayer extends PlatformPlayer {
             print(exception);
             print(stacktrace);
           }
+        }
+
+        // Cues only load for a showing/hidden track; browsers may reset the
+        // mode once the source loads, so apply it again then.
+        child.onLoad.listen((_) {
+          child.track?.mode = 'hidden';
         });
+        element.append(child);
+        child.src = uri;
+        final textTrack = child.track;
+        if (textTrack != null) {
+          textTrack.mode = 'hidden';
+          textTrack.onCueChange.listen((_) => handleCueChange(textTrack));
+        }
       } else {
         throw UnsupportedError(
           '[Player.setSubtitleTrack] is only supported with [SubtitleTrack.uri] & [SubtitleTrack.data] on web',
@@ -1360,6 +1371,17 @@ class WebPlayer extends PlatformPlayer {
       return lock.synchronized(function);
     } else {
       return function();
+    }
+  }
+
+  /// Object URL of the current [SubtitleTrack.data] subtitle, if any.
+  String? _subtitleBlobUrl;
+
+  void _revokeSubtitleBlobUrl() {
+    final url = _subtitleBlobUrl;
+    if (url != null) {
+      html.Url.revokeObjectUrl(url);
+      _subtitleBlobUrl = null;
     }
   }
 
