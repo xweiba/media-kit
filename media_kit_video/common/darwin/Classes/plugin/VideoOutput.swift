@@ -333,8 +333,9 @@ public class VideoOutput: NSObject {
   }
 
   public func preparePictureInPicture() -> Bool {
-    #if os(iOS)
-      if #available(iOS 15.0, *),
+    #if os(iOS) || os(macOS)
+      // macOS 的 prepare 只确认能力并挂好内容源图层，不开启帧复制。
+      if #available(iOS 15.0, macOS 12.0, *),
         let renderer = pictureInPictureRenderer as? PictureInPictureRenderer
       {
         let accepted = renderer.prepare()

@@ -1,5 +1,6 @@
 import AVFoundation
 import AVKit
+import AppKit
 import CoreMedia
 import CoreVideo
 
@@ -114,6 +115,29 @@ final class PictureInPictureRenderer: NSObject,
     presentationLock.lock()
     displayLayer.flushAndRemoveImage()
     presentationLock.unlock()
+    displayLayer.removeFromSuperlayer()
+  }
+
+  /// macOS 没有「切后台自动画中画」，无需预热帧复制：只确认系统支持，
+  /// 并把内容源图层挂进窗口图层树，供后续 [start] 使用。
+  func prepare() -> Bool {
+    dispatchPrecondition(condition: .onQueue(.main))
+    guard AVPictureInPictureController.isPictureInPictureSupported() else {
+      return false
+    }
+    attachDisplayLayerToWindow()
+    return true
+  }
+
+  /// sample-buffer 内容源图层属于可见窗口图层树时，系统才会稳定地把
+  /// `isPictureInPicturePossible` 置为 true。Flutter Texture 仍是应用内画面，
+  /// 这里只挂一个最底层的 1pt 承载区，避免透出第二份画面。
+  private func attachDisplayLayerToWindow() {
+    guard displayLayer.superlayer == nil else { return }
+    let window = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first
+    guard let layer = window?.contentView?.layer else { return }
+    displayLayer.frame = CGRect(x: 0, y: 0, width: 1, height: 1)
+    layer.insertSublayer(displayLayer, at: 0)
   }
 
   /// 仅在准备或显示 PiP 时复制 mpv 像素帧，避免普通播放长期承担额外内存带宽。
@@ -276,6 +300,7 @@ final class PictureInPictureRenderer: NSObject,
     if controller.isPictureInPictureActive || startRequested {
       return true
     }
+    attachDisplayLayerToWindow()
     requestGeneration += 1
     let generation = requestGeneration
     startRequested = true

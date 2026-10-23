@@ -108,10 +108,15 @@ class NativeVideoController extends PlatformVideoController {
     }
   }
 
-  /// Enters iOS system picture-in-picture using the current native output.
+  /// System picture-in-picture is implemented natively on iOS 15+ and
+  /// macOS 12+ (older OS versions answer `false` from the native side).
+  static bool get _supportsPictureInPicture =>
+      Platform.isIOS || Platform.isMacOS;
+
+  /// Enters system picture-in-picture using the current native output.
   @override
   Future<bool> enterPictureInPicture() async {
-    if (!Platform.isIOS) return false;
+    if (!_supportsPictureInPicture) return false;
     final handle = await player.handle;
     return await _channel.invokeMethod<bool>(
           'VideoOutputManager.EnterPictureInPicture',
@@ -120,10 +125,13 @@ class NativeVideoController extends PlatformVideoController {
         false;
   }
 
-  /// Prepares iOS system picture-in-picture without presenting it yet.
+  /// Prepares system picture-in-picture without presenting it yet.
+  ///
+  /// On macOS there is no automatic background picture-in-picture; this only
+  /// reports support and attaches the native content source.
   @override
   Future<bool> preparePictureInPicture() async {
-    if (!Platform.isIOS) return false;
+    if (!_supportsPictureInPicture) return false;
     final handle = await player.handle;
     return await _channel.invokeMethod<bool>(
           'VideoOutputManager.PreparePictureInPicture',
@@ -132,10 +140,10 @@ class NativeVideoController extends PlatformVideoController {
         false;
   }
 
-  /// Dismisses iOS system picture-in-picture for the current native output.
+  /// Dismisses system picture-in-picture for the current native output.
   @override
   Future<bool> exitPictureInPicture() async {
-    if (!Platform.isIOS) return false;
+    if (!_supportsPictureInPicture) return false;
     final handle = await player.handle;
     return await _channel.invokeMethod<bool>(
           'VideoOutputManager.ExitPictureInPicture',
