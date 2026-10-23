@@ -1351,10 +1351,16 @@ class NativePlayer extends PlatformPlayer {
     final name = property.toNativeUtf8();
     final data = value.toNativeUtf8();
     final pointer = calloc<Pointer<Utf8>>()..value = data;
+    // Track the reply like [_setProperty] does: a bare reply ID (e.g. 0)
+    // would be reported as unregistered or, worse, complete another pending
+    // request that happens to use the same ID.
+    final requestNumber = _asyncRequestNumber++;
+    final completer = _setPropertyRequests[requestNumber] = Completer<int>();
+    final text = 'setPropertyAsync($property)';
     // libmpv copies the name and the value before returning.
-    mpv.mpv_set_property_async(
+    final immediate = mpv.mpv_set_property_async(
       ctx,
-      0,
+      requestNumber,
       name.cast(),
       generated.mpv_format.MPV_FORMAT_STRING,
       pointer.cast(),
@@ -1362,6 +1368,14 @@ class NativePlayer extends PlatformPlayer {
     calloc.free(pointer);
     calloc.free(name);
     calloc.free(data);
+    if (immediate < 0) {
+      // Sending failed, so no reply event will remove this request.
+      _setPropertyRequests.remove(requestNumber);
+      _logError(immediate, text);
+      return;
+    }
+    // Not awaited: callers only need the request queued in order.
+    unawaited(completer.future.then((result) => _logError(result, text)));
   }
 
   /// Retrieves the value of a property from the internal libmpv instance of this [Player].
