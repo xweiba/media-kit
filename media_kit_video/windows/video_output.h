@@ -103,6 +103,10 @@ class VideoOutput {
   // destruction.
   bool destroyed_ = false;
 
+  // Set by |Resize| so the freshly created texture receives the current frame
+  // even when mpv reports no new one. Accessed only on the thread pool.
+  bool force_render_ = true;
+
   std::mutex textures_mutex_ = std::mutex();
 
   std::unordered_map<int64_t, std::unique_ptr<flutter::TextureVariant>>

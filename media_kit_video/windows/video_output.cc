@@ -161,7 +161,15 @@ void VideoOutput::NotifyRender() {
 }
 
 void VideoOutput::Render() {
-  if (texture_id_) {
+  if (texture_id_ && render_context_ != nullptr) {
+    // Acknowledge the update on the render thread. mpv also wakes us for
+    // reasons that need no new frame; only MPV_RENDER_UPDATE_FRAME (or a
+    // freshly resized, still empty texture) warrants rendering & presenting.
+    auto flags = mpv_render_context_update(render_context_);
+    if ((flags & MPV_RENDER_UPDATE_FRAME) == 0 && !force_render_) {
+      return;
+    }
+    force_render_ = false;
     // H/W
     if (d3d11_renderer_ != nullptr) {
       mpv_render_context_render(render_context_, nullptr);
@@ -262,6 +270,7 @@ void VideoOutput::CheckAndResize() {
 
 void VideoOutput::Resize(int64_t required_width, int64_t required_height) {
   std::cout << required_width << " " << required_height << std::endl;
+  force_render_ = true;
   // Unregister previously registered texture & delete underlying objects.
   if (texture_id_) {
     registrar_->texture_registrar()->UnregisterTexture(
