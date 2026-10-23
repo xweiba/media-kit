@@ -151,20 +151,26 @@ public class VideoOutput: NSObject {
       )
     }
 
+    // macOS TextureHW fails instead of exiting when OpenGL is unavailable.
+    var hardwareTexture: ResizableTextureProtocol?
     if enableHardwareAcceleration {
-      texture = SafeResizableTexture(
-        TextureHW(
-          handle: handle,
-          // Use `weak self` to prevent memory leaks
-          updateCallback: { [weak self]() in
-            guard let that = self else {
-              return
-            }
-            that.updateCallback()
+      hardwareTexture = TextureHW(
+        handle: handle,
+        // Use `weak self` to prevent memory leaks
+        updateCallback: { [weak self]() in
+          guard let that = self else {
+            return
           }
-        )
+          that.updateCallback()
+        }
       )
+    }
+    if let hardwareTexture {
+      texture = SafeResizableTexture(hardwareTexture)
     } else {
+      if enableHardwareAcceleration {
+        NSLog("VideoOutput: hardware rendering unavailable; using software rendering")
+      }
       texture = SafeResizableTexture(
         TextureSW(
           handle: handle,

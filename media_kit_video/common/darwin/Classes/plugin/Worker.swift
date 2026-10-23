@@ -21,22 +21,21 @@ class Worker {
   }
 
   public func enqueue(_ job: @escaping Job) {
-    locked {
+    // Jobs enqueued after cancel would never run, yet keep their captures
+    // (usually the owner) alive forever.
+    let accepted = locked {
+      if canceled { return false }
       queue.append(job)
+      return true
     }
-
-    semaphore.signal()
+    if accepted { semaphore.signal() }
   }
 
   private func loop() {
     while true {
       semaphore.wait()
 
-      if isCanceled() {
-        return
-      }
-
-      let job = getFirstJob()
+      guard let job = getFirstJob() else { return }
       job()
     }
   }
@@ -44,22 +43,17 @@ class Worker {
   private func signalCancel() {
     locked {
       canceled = true
+      // Release pending jobs (and the owners they capture) right away.
+      queue.removeAll()
     }
 
     semaphore.signal()
   }
 
-  private func isCanceled() -> Bool {
-    let c = locked {
-      canceled
-    }
-
-    return c
-  }
-
-  private func getFirstJob() -> Job {
+  private func getFirstJob() -> Job? {
     let job = locked {
-      queue.removeFirst()
+      if canceled || queue.isEmpty { return nil as Job? }
+      return queue.removeFirst()
     }
 
     return job
