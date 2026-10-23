@@ -105,24 +105,15 @@ class OhosVideoController extends PlatformVideoController {
     Player player,
     VideoControllerConfiguration configuration,
   ) async {
-    final bool isEmulator = await _channel.invokeMethod('Utils.IsEmulator');
-    if (isEmulator) {
-      throw UnsupportedError(
-        '[VideoController] does not support emulator.'
-        ' '
-        'Please use actual device.',
-      );
-    }
-
-    Future<String> getDefaultHwdec() async {
-      bool hw = configuration.enableHardwareAcceleration;
-      return hw ? 'auto' : 'no';
-    }
+    // 不按设备型号猜模拟器直接拒绝（与 Android 一致）：一律先试硬解，
+    // 解不了时 mpv 自己退回软解。
+    String getDefaultHwdec() =>
+        configuration.enableHardwareAcceleration ? 'auto' : 'no';
 
     // Update [configuration] to have default values.
     configuration = configuration.copyWith(
       vo: configuration.vo ?? 'gpu-next',
-      hwdec: configuration.hwdec ?? await getDefaultHwdec(),
+      hwdec: configuration.hwdec ?? getDefaultHwdec(),
     );
 
     // Retrieve the native handle of the [Player].

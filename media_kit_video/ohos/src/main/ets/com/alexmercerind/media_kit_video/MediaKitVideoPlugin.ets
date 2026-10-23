@@ -82,10 +82,6 @@ export default class MediaKitVideoPlugin implements FlutterPlugin, MethodCallHan
         result.success(null);
         break;
       }
-      case "Utils.IsEmulator": {
-        result.success(Utils.isEmulator());
-        break;
-      }
       case "Utils.EnterNativeFullscreen": {
         Utils.enterFullScreen(this.context!);
         result.success(null);

@@ -11,14 +11,6 @@ import { window } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 
 export class Utils {
-  static isEmulator(): boolean {
-    if (deviceInfo.productModel == "emulator") {
-      return true;
-    } else {
-      return false;
-    }
-  }
-
   static enterFullScreen(context: common.UIAbilityContext): void {
     window.getLastWindow(context).then((lastWindow) => {
       if (deviceInfo.deviceType == '2in1') {
