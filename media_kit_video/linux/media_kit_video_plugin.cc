@@ -134,14 +134,28 @@ static void media_kit_video_plugin_handle_method_call(
     FlValue* result = fl_value_new_null();
     response = FL_METHOD_RESPONSE(fl_method_success_response_new(result));
 
-  } else if (g_strcmp0(method, "Utils.EnterNativeFullscreen") == 0) {
-    utils_enter_native_fullscreen(
-        gtk_widget_get_toplevel(GTK_WIDGET(self->view)));
-    FlValue* result = fl_value_new_null();
-    response = FL_METHOD_RESPONSE(fl_method_success_response_new(result));
-  } else if (g_strcmp0(method, "Utils.ExitNativeFullscreen") == 0) {
-    utils_exit_native_fullscreen(
-        gtk_widget_get_toplevel(GTK_WIDGET(self->view)));
+  } else if (g_strcmp0(method, "Utils.EnterNativeFullscreen") == 0 ||
+             g_strcmp0(method, "Utils.ExitNativeFullscreen") == 0) {
+    GtkWidget* window =
+        self->view != NULL ? gtk_widget_get_toplevel(GTK_WIDGET(self->view))
+                           : NULL;
+    if (window != NULL && GTK_IS_WINDOW(window)) {
+      // Reply once the window actually changed state, like macOS does.
+      gboolean fullscreen =
+          g_strcmp0(method, "Utils.EnterNativeFullscreen") == 0;
+      utils_set_native_fullscreen(
+          window, fullscreen,
+          [](gpointer data) {
+            FlMethodCall* call = FL_METHOD_CALL(data);
+            g_autoptr(FlValue) result = fl_value_new_null();
+            g_autoptr(FlMethodResponse) reply =
+                FL_METHOD_RESPONSE(fl_method_success_response_new(result));
+            fl_method_call_respond(call, reply, nullptr);
+            g_object_unref(call);
+          },
+          g_object_ref(method_call));
+      return;
+    }
     FlValue* result = fl_value_new_null();
     response = FL_METHOD_RESPONSE(fl_method_success_response_new(result));
   } else {
