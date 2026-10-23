@@ -305,11 +305,16 @@ VideoOutput* video_output_new(FlTextureRegistrar* texture_registrar,
                     if (width > 0 && height > 0) {
                       gint32 size[]{(gint32)width, (gint32)height};
                       gint32 pitch = 4 * (gint32)width;
+                      // Runs on the platform thread: never wait for mpv's
+                      // present-sync target time here.
+                      int block_for_target_time = 0;
                       mpv_render_param params[]{
                           {MPV_RENDER_PARAM_SW_SIZE, size},
                           {MPV_RENDER_PARAM_SW_FORMAT, (void*)"rgb0"},
                           {MPV_RENDER_PARAM_SW_STRIDE, &pitch},
                           {MPV_RENDER_PARAM_SW_POINTER, self->pixel_buffer},
+                          {MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME,
+                           &block_for_target_time},
                           {MPV_RENDER_PARAM_INVALID, (void*)0},
                       };
                       mpv_render_context_render(self->render_context, params);
