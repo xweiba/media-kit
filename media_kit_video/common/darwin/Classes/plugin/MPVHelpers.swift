@@ -17,18 +17,20 @@ public enum MPVHelpers {
     _ handle: OpaquePointer
   ) -> MPVVideoOutParams {
     var node = mpv_node()
+    // A failed query (no video yet) transfers no ownership.
+    guard mpv_get_property(handle, "video-out-params", MPV_FORMAT_NODE, &node) >= 0 else {
+      return MPVVideoOutParams.empty
+    }
     defer {
       mpv_free_node_contents(&node)
     }
 
-    mpv_get_property(handle, "video-out-params", MPV_FORMAT_NODE, &node)
-
-    if node.format != MPV_FORMAT_NODE_MAP {
+    guard node.format == MPV_FORMAT_NODE_MAP, let list = node.u.list else {
       return MPVVideoOutParams.empty
     }
 
-    let map: mpv_node_list = node.u.list!.pointee
-    if map.num == 0 {
+    let map: mpv_node_list = list.pointee
+    if map.num <= 0 {
       return MPVVideoOutParams.empty
     }
 

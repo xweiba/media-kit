@@ -414,11 +414,17 @@ guint8* video_output_get_pixel_buffer(VideoOutput* self) {
 static void video_output_get_video_dimensions(VideoOutput* self,
                                               gint64* out_width,
                                               gint64* out_height) {
-  mpv_node params;
-  mpv_get_property(self->handle, "video-out-params", MPV_FORMAT_NODE, &params);
-
   int64_t dw = 0, dh = 0, rotate = 0;
-  if (params.format == MPV_FORMAT_NODE_MAP) {
+  mpv_node params{};
+  // Unavailable before the first frame: a failed query leaves |params|
+  // untouched and transfers no ownership.
+  if (mpv_get_property(self->handle, "video-out-params", MPV_FORMAT_NODE,
+                       &params) < 0) {
+    *out_width = 0;
+    *out_height = 0;
+    return;
+  }
+  if (params.format == MPV_FORMAT_NODE_MAP && params.u.list != NULL) {
     for (int32_t i = 0; i < params.u.list->num; i++) {
       char* key = params.u.list->keys[i];
       auto value = params.u.list->values[i];
@@ -434,8 +440,9 @@ static void video_output_get_video_dimensions(VideoOutput* self,
         }
       }
     }
-    mpv_free_node_contents(&params);
   }
+  // Successful non-map results also need releasing.
+  mpv_free_node_contents(&params);
 
   *out_width = rotate == 0 || rotate == 180 ? dw : dh;
   *out_height = rotate == 0 || rotate == 180 ? dh : dw;

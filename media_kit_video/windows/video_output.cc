@@ -383,11 +383,15 @@ int64_t VideoOutput::GetVideoWidth() {
   int64_t width = 0;
   int64_t height = 0;
 
-  mpv_node params;
-  mpv_get_property(handle_, "video-out-params", MPV_FORMAT_NODE, &params);
+  // Unavailable before the first frame: a failed query leaves |params|
+  // untouched (zeroed) and transfers no ownership.
+  mpv_node params{};
+  auto status =
+      mpv_get_property(handle_, "video-out-params", MPV_FORMAT_NODE, &params);
 
   int64_t dw = 0, dh = 0, rotate = 0;
-  if (params.format == MPV_FORMAT_NODE_MAP) {
+  if (status >= 0 && params.format == MPV_FORMAT_NODE_MAP &&
+      params.u.list != nullptr) {
     for (int32_t i = 0; i < params.u.list->num; i++) {
       char* key = params.u.list->keys[i];
       auto value = params.u.list->values[i];
@@ -403,6 +407,9 @@ int64_t VideoOutput::GetVideoWidth() {
         }
       }
     }
+  }
+  if (status >= 0) {
+    // Successful non-map results also need releasing.
     mpv_free_node_contents(&params);
   }
 
@@ -432,11 +439,15 @@ int64_t VideoOutput::GetVideoHeight() {
   int64_t width = 0;
   int64_t height = 0;
 
-  mpv_node params;
-  mpv_get_property(handle_, "video-out-params", MPV_FORMAT_NODE, &params);
+  // Unavailable before the first frame: a failed query leaves |params|
+  // untouched (zeroed) and transfers no ownership.
+  mpv_node params{};
+  auto status =
+      mpv_get_property(handle_, "video-out-params", MPV_FORMAT_NODE, &params);
 
   int64_t dw = 0, dh = 0, rotate = 0;
-  if (params.format == MPV_FORMAT_NODE_MAP) {
+  if (status >= 0 && params.format == MPV_FORMAT_NODE_MAP &&
+      params.u.list != nullptr) {
     for (int32_t i = 0; i < params.u.list->num; i++) {
       char* key = params.u.list->keys[i];
       auto value = params.u.list->values[i];
@@ -452,6 +463,9 @@ int64_t VideoOutput::GetVideoHeight() {
         }
       }
     }
+  }
+  if (status >= 0) {
+    // Successful non-map results also need releasing.
     mpv_free_node_contents(&params);
   }
 
