@@ -97,9 +97,17 @@ class NativeVideoController extends PlatformVideoController {
 
   NativePlayer get platform => player.platform as NativePlayer;
 
+  /// Re-creating the video output blocks libmpv's core: set asynchronously
+  /// so the UI isolate keeps running. Requests are applied in the order made,
+  /// but a later synchronous call (e.g. [NativePlayer.getProperty]) may run
+  /// before them: use [_setPropertyNow] where the result must be observed.
   Future<void> setProperty(String key, String value) async {
-    await platform.setProperty(key, value, waitForInitialization: false);
+    await platform.setPropertyAsync(key, value);
   }
+
+  /// Sets [key] and returns only after libmpv applied it.
+  Future<void> _setPropertyNow(String key, String value) =>
+      platform.setProperty(key, value, waitForInitialization: false);
 
   Future<void> setProperties(Map<String, String> properties) async {
     // ORDER IS IMPORTANT.
@@ -194,11 +202,10 @@ class NativeVideoController extends PlatformVideoController {
       lock.synchronized(() async {
         if (!nativeView.value || _wid == wid) return;
         // 换解码设备（VideoToolbox 直出）要重建视频链：先停视频轨再切。
-        await setProperties({
-          'vid': 'no',
-          'wid': '$wid',
-          'vo': 'avfoundation_embed',
-        });
+        // 同步设置：紧接着要读回 vo 判断是否切换成功。
+        await _setPropertyNow('vid', 'no');
+        await _setPropertyNow('wid', '$wid');
+        await _setPropertyNow('vo', 'avfoundation_embed');
         // 解析失败（这个 libmpv 没有该模块）时 vo 不变。
         if (await platform.getProperty('vo') != 'avfoundation_embed') {
           _wid = wid;
@@ -223,12 +230,11 @@ class NativeVideoController extends PlatformVideoController {
 
   /// 切回纹理（mpv 不再碰那个层），再让原生侧释放层。
   Future<void> _releaseNative() async {
-    await setProperties({
-      'vid': 'no',
-      'vo': configuration.vo ?? 'libmpv',
-      'wid': '0',
-    });
-    await setProperty('vid', 'auto');
+    // 必须同步：原生侧释放层之前 mpv 要确实已离开该层。
+    await _setPropertyNow('vid', 'no');
+    await _setPropertyNow('vo', configuration.vo ?? 'libmpv');
+    await _setPropertyNow('wid', '0');
+    await _setPropertyNow('vid', 'auto');
     _wid = null;
     await _channel.invokeMethod('NativeVideoView.Release', {
       'handle': '${await player.handle}',

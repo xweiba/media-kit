@@ -34,8 +34,10 @@ class OhosVideoController extends PlatformVideoController {
 
   NativePlayer get platform => player.platform as NativePlayer;
 
+  /// Re-creating the video output blocks libmpv's core: set asynchronously
+  /// so the UI isolate keeps running. Requests are applied in the order made.
   Future<void> setProperty(String key, String value) async {
-    await platform.setProperty(key, value, waitForInitialization: false);
+    await platform.setPropertyAsync(key, value);
   }
 
   Future<void> setProperties(Map<String, String> properties) async {
